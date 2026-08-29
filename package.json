@@ -1,0 +1,28 @@
+{
+  "name": "satchel",
+  "productName": "Satchel",
+  "version": "0.1.0",
+  "description": "Launcher and window manager for terminal windows - built for juggling many Claude Code sessions, usable for any shell.",
+  "keywords": ["electron", "window-manager", "claude-code", "terminal", "mintty", "git-bash", "taskbar", "tray", "windows", "session-manager"],
+  "author": "PEDREA, spol. s r. o. <pedrea.spol.s.r.o@gmail.com>",
+  "repository": { "type": "git", "url": "git+https://github.com/pedreaspolsro/satchel.git" },
+  "homepage": "https://github.com/pedreaspolsro/satchel#readme",
+  "bugs": { "url": "https://github.com/pedreaspolsro/satchel/issues" },
+  "main": "src/main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "list": "electron . --list",
+    "test": "node --test test/",
+    "icon": "node build/make-icon.js",
+    "build": "node build/build.js"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "koffi": "^2.10.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^18.4.4",
+    "electron": "^39.8.10"
+  }
+}

@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Satchel</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- ===== floating panel ===== -->
+  <header class="top panel-only">
+    <div class="tabbar">
+      <nav id="tabs" class="tabs"></nav>
+      <div class="tabbar-actions">
+        <button id="btn-tile" title="Tile the windows of this tab on the selected display"><span class="bicon">▦</span>Tile</button>
+        <button id="btn-cascade" title="Cascade the windows of this tab"><span class="bicon">⧉</span>Cascade</button>
+        <button id="btn-minall" title="Minimize the windows of this tab"><span class="bicon">▁</span>Min all</button>
+      </div>
+    </div>
+    <div class="toolbar">
+      <button id="btn-new" class="primary" title="Launch a new session (Ctrl+N)">+ New</button>
+      <select id="display" title="Target display for Tile / Cascade / Dock" hidden></select>
+      <span class="grow"></span>
+      <button id="btn-hooks" title="Claude Code hooks: precise 'needs you' events and automatic grouping by account">Hooks</button>
+      <button id="btn-dock" class="icon" title="Dock to the screen edge (taskbar-like strip)">⤒</button>
+      <button id="btn-pin" class="icon" title="Keep Satchel on top">📌</button>
+      <button id="btn-config" class="icon" title="Open config.json">⚙</button>
+      <button id="btn-reload" class="icon" title="Reload config.json">↻</button>
+    </div>
+  </header>
+
+  <main id="list" class="list panel-only"></main>
+  <footer id="footer" class="footer panel-only"></footer>
+
+  <!-- ===== docked strip ===== -->
+  <div id="dock" class="dock" hidden>
+    <nav id="dock-tabs" class="dock-tabs"></nav>
+    <div class="dock-actions">
+      <button id="dock-tile" class="icon" title="Tile the windows of this tab">▦</button>
+      <button id="dock-cascade" class="icon" title="Cascade the windows of this tab">⧉</button>
+      <button id="dock-minall" class="icon" title="Minimize the windows of this tab">▁</button>
+    </div>
+    <div id="dock-chips" class="dock-chips"></div>
+    <div class="dock-tools">
+      <button id="dock-new" class="primary dock-new" title="Launch a new session (Ctrl+N)">+ New</button>
+      <button id="dock-config" class="icon" title="Open config.json">⚙</button>
+      <button id="dock-undock" class="icon" title="Undock (back to the floating panel)">⤓</button>
+    </div>
+  </div>
+
+  <script src="renderer.js"></script>
+</body>
+</html>
