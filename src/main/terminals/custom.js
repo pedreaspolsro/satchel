@@ -9,7 +9,7 @@
  *   {command} expands to "<command>; exec <shell> -l -i" when a profile command is set,
  *   or to "exec <shell> -l -i" for a plain shell.
  */
-const { spawnProcess } = require('./spawn');
+const { spawnProcess, scrubEnv } = require('./spawn');
 
 module.exports = (cfg = {}, backend = null) => ({
   name: 'custom',
@@ -19,6 +19,6 @@ module.exports = (cfg = {}, backend = null) => ({
     const cmd = command ? `${command}; exec ${sh} -l -i` : `exec ${sh} -l -i`;
     const vars = { cwd, title: title || 'Satchel', shell: sh, command: cmd };
     const argv = cfg.argv.map((a) => a.replace(/\{(cwd|title|shell|command)\}/g, (_, k) => vars[k]));
-    return spawnProcess(backend, { exe: argv[0], args: argv.slice(1), cwd, env: { ...process.env, ...env } });
+    return spawnProcess(backend, { exe: argv[0], args: argv.slice(1), cwd, env: { ...scrubEnv(process.env), ...env } });
   },
 });
