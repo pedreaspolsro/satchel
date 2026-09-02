@@ -64,6 +64,7 @@ function defaults() {
     startMinimized: false,  // start hidden in the tray (for autostart)
     dock: { edge: 'top', height: 40 }, // where the toolbar's dock button puts the strip, and how thick it is
     raiseGroupOnSelect: true, // docked: clicking a group tab also brings that group's non-minimized windows to the front
+    nameClaudeSession: true,  // "+ New" with a label runs `claude --name <label>` so Claude's title and --resume picker show it
     adoptForeign: true,
     adoptExecutables: ['mintty.exe', 'WindowsTerminal.exe', 'wezterm-gui.exe', 'alacritty.exe'],
     defaultGroup: 'Other',

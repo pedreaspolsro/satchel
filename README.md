@@ -77,6 +77,9 @@ Keyboard: `Ctrl+N` new session · `Ctrl+1..9` focus the n-th row of the current 
 the focused row · `Esc` close the form · global `Ctrl+Alt+S` shows/hides Satchel.
 
 Row click = focus that terminal. Right-click / `⋯` = rename, move to group, minimize, close, forget.
+The row (or docked chip) of the terminal that is currently in the foreground is marked with `▸`, a
+lighter background and a glow in its group colour; while Satchel itself has focus it keeps pointing
+at the terminal you came from.
 
 ## Install on another machine
 
@@ -112,6 +115,7 @@ experimental/X11-only, macOS is a stub). You'd package for that OS and finish it
   "alwaysOnTop": true,
   "hotkey": "CommandOrControl+Alt+S",
   "notifications": true,
+  "nameClaudeSession": true,                 // "+ New" label -> `claude --name <label>` (see hooks section)
   "adoptForeign": true,                      // track terminals you opened outside Satchel
   "adoptExecutables": ["mintty.exe", "WindowsTerminal.exe", "wezterm-gui.exe", "alacritty.exe"],
   "defaultGroup": "Other",
@@ -153,10 +157,26 @@ What you get:
   `CLAUDE_CONFIG_DIR`; Satchel walks the process tree (hook → claude → bash → mintty) to find the
   window and moves it into the profile's group (Personal / Company …). A group you set by hand is
   never overridden;
+* **Claude's session name as the row name** — hooks carry `session_title` (the `/rename` name, the
+  `--name` given at launch, or the topic Claude generates from your first prompt). Rows without a
+  label show it, and keep showing it after Claude exits to the shell prompt (the window title
+  then only says `MINGW64:/path`). `/clear` or a fresh `claude` in the same window resets it;
+* **names that follow the conversation** — the label and group you give a row are remembered per
+  Claude session id (`~/.satchel/names.json`). Close the window, later run `claude --resume` in a
+  new one: the row comes back with the same label and group;
+* `SessionEnd` tells Satchel that Claude left the window, so a later `--resume` of that
+  conversation elsewhere is not misattributed to it;
 * the session's real `cwd` and Claude session id per row.
 
-Hooks take effect for Claude sessions started after installation. The hook runs `node`, so `node`
-must be on the PATH Claude Code uses.
+Naming works in the other direction only at launch: a label typed into **+ New** is passed as
+`claude --name "<label>"` (for profiles whose command is plain `claude`), so Claude's own title and
+its `--resume` picker show the same name. Set `nameClaudeSession: false` to keep Claude's
+auto-generated topic instead. Renaming a row later (F2) changes only Satchel's label — Claude has no
+external rename API; use `/rename` inside the session for that (the row picks it up).
+
+Hooks take effect for Claude sessions started after installation. Satchel wires newly added hook
+events (e.g. `SessionEnd`) into config dirs where its hook is already installed on the next start.
+The hook runs `node`, so `node` must be on the PATH Claude Code uses.
 
 Manual alternative — add to `settings.json` in each config dir:
 
@@ -164,6 +184,7 @@ Manual alternative — add to `settings.json` in each config dir:
 {
   "hooks": {
     "SessionStart":     [{ "hooks": [{ "type": "command", "command": "node \"P:/Projects/Me/Satchel/hooks/claude-code-hook.js\"" }] }],
+    "SessionEnd":       [{ "hooks": [{ "type": "command", "command": "node \"P:/Projects/Me/Satchel/hooks/claude-code-hook.js\"" }] }],
     "UserPromptSubmit": [{ "hooks": [{ "type": "command", "command": "node \"P:/Projects/Me/Satchel/hooks/claude-code-hook.js\"" }] }],
     "Notification":     [{ "hooks": [{ "type": "command", "command": "node \"P:/Projects/Me/Satchel/hooks/claude-code-hook.js\"" }] }],
     "Stop":             [{ "hooks": [{ "type": "command", "command": "node \"P:/Projects/Me/Satchel/hooks/claude-code-hook.js\"" }] }]
@@ -208,6 +229,7 @@ hook matching through the process tree, auto-grouping, launch, tile, forget);
 ```
 ~/.satchel/config.json     profiles, groups, terminal, options
 ~/.satchel/sessions.json   labels/groups of live sessions (survives restarts)
+~/.satchel/names.json      label/group/title per Claude session id (comes back with --resume)
 ~/.satchel/state.json      window position, pin state
 ~/.satchel/events.jsonl    hook events (append-only, safe to delete)
 ```

@@ -18,8 +18,10 @@ class HookWatcher {
 
   start() {
     fs.mkdirSync(path.dirname(this.file), { recursive: true });
-    if (!fs.existsSync(this.file)) fs.writeFileSync(this.file, '');
-    this.offset = fs.statSync(this.file).size; // skip history
+    // History is never replayed, so start from an empty file (keeps it from growing forever).
+    // A hook may be appending right now (rare, ~ms) — then just skip what is there instead.
+    try { fs.writeFileSync(this.file, ''); this.offset = 0; }
+    catch { this.offset = fs.existsSync(this.file) ? fs.statSync(this.file).size : 0; }
     fs.watchFile(this.file, { interval: 500 }, () => this._read());
   }
 
@@ -52,7 +54,7 @@ class HookWatcher {
 
 // ---- installing the hook into Claude Code settings --------------------------------------
 
-const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop'];
+const HOOK_EVENTS = ['SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Notification', 'Stop'];
 
 function hookCommand(scriptPath) {
   return `node "${scriptPath.replace(/\\/g, '/')}"`;
@@ -136,6 +138,33 @@ function uninstallClaudeHooks(configDirs, scriptPath) {
 }
 
 /**
+ * Upgrade: where our hook is already installed for some events, wire the events that were added in
+ * later Satchel versions (e.g. SessionEnd) without the user having to click "Hooks" again. Config
+ * dirs without any Satchel hook are left alone (the user opted out or never opted in).
+ */
+function upgradeClaudeHooks(configDirs, scriptPath) {
+  const needle = scriptPath.replace(/\\/g, '/').toLowerCase();
+  const ours = (h) => h && h.type === 'command' && String(h.command).replace(/\\/g, '/').toLowerCase().includes(needle);
+  const results = [];
+  for (const dir of configDirs) {
+    const settingsFile = path.join(dir, 'settings.json');
+    const settings = readSettings(settingsFile);
+    if (!settings || !settings.hooks) { results.push({ dir, upgraded: false }); continue; }
+    const wired = (ev) => Array.isArray(settings.hooks[ev]) && settings.hooks[ev].some((grp) => Array.isArray(grp.hooks) && grp.hooks.some(ours));
+    if (!HOOK_EVENTS.some(wired) || HOOK_EVENTS.every(wired)) { results.push({ dir, upgraded: false }); continue; }
+    for (const ev of HOOK_EVENTS) {
+      if (wired(ev)) continue;
+      const groups = Array.isArray(settings.hooks[ev]) ? settings.hooks[ev] : [];
+      groups.push({ hooks: [{ type: 'command', command: hookCommand(scriptPath) }] });
+      settings.hooks[ev] = groups;
+    }
+    fs.writeFileSync(settingsFile, `${JSON.stringify(settings, null, 2)}\n`);
+    results.push({ dir, upgraded: true });
+  }
+  return results;
+}
+
+/**
  * Rename migration: rewrite any installed hook command pointing at the OLD script path to the NEW
  * one, in place, so hooks keep working after the ShellMan -> Satchel rename (no duplicates, no
  * re-install needed). Matches loosely on the old script's directory+filename.
@@ -164,4 +193,4 @@ function migrateHookPath(configDirs, oldScript, newScript) {
   return results;
 }
 
-module.exports = { HookWatcher, hookStatus, installClaudeHooks, uninstallClaudeHooks, migrateHookPath, HOOK_EVENTS, hookCommand };
+module.exports = { HookWatcher, hookStatus, installClaudeHooks, uninstallClaudeHooks, upgradeClaudeHooks, migrateHookPath, HOOK_EVENTS, hookCommand };

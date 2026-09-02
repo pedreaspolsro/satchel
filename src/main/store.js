@@ -7,6 +7,7 @@ const { DIR } = require('./config');
 
 const SESSIONS = path.join(DIR, 'sessions.json');
 const STATE = path.join(DIR, 'state.json');
+const NAMES = path.join(DIR, 'names.json'); // per Claude session id: label / group / title (survives window restarts)
 
 function readJson(file, fallback) {
   try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return fallback; }
@@ -24,4 +25,6 @@ module.exports = {
   saveSessions: (list) => writeJson(SESSIONS, list),
   loadState: () => readJson(STATE, {}),
   saveState: (state) => writeJson(STATE, state),
+  loadNames: () => { const v = readJson(NAMES, {}); return v && typeof v === 'object' && !Array.isArray(v) ? v : {}; },
+  saveNames: (names) => writeJson(NAMES, names),
 };

@@ -30,6 +30,12 @@ function finish() {
     cwd: input.cwd || process.cwd(),
     message: input.message || input.title || null,
     notificationType: input.notification_type || null,
+    // Claude's own name for the session (/rename, --name, or the generated topic) -> row name.
+    sessionTitle: input.session_title || null,
+    // SessionStart: startup | resume | clear | compact | fork; SessionEnd: why Claude stopped.
+    // (Field names differ between Claude Code versions/docs — accept both spellings.)
+    source: input.source || input.start_mode || null,
+    reason: input.reason || input.end_reason || null,
     // Lets Satchel find the terminal window of sessions it did not launch: it walks the
     // process tree upwards from our parent (shell <- claude <- bash <- mintty).
     pid: process.pid,

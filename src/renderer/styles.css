@@ -92,6 +92,10 @@ body.newwin { padding: 12px; background: var(--bg); }
 .row.attention .status { color: var(--att); font-weight: 600; }
 .row.minimized { opacity: .55; }
 .row.pending .st { background: transparent; border: 1px dashed var(--muted); }
+/* the terminal that is in the foreground right now (or was, while Satchel itself has focus) */
+.row.focused { background: #2b3242; border-color: color-mix(in srgb, var(--c) 70%, transparent); }
+.row.focused .bar { box-shadow: 0 0 6px 1px var(--c); }
+.row.focused .label::before { content: '▸'; color: var(--c); margin-right: 4px; font-weight: 400; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
 kbd { font: 10px ui-monospace, Consolas, monospace; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
@@ -140,6 +144,8 @@ body.dock-bottom .dock { border-bottom: none; border-top: 1px solid var(--border
 .chip.attention .st { background: var(--att); animation: pulse 0.8s infinite; }
 .chip.minimized { opacity: .55; }
 .chip.pending .st { background: transparent; border: 1px dashed var(--muted); }
+.chip.focused { background: #2b3242; border-color: var(--c); }
+.chip.focused .bar { box-shadow: 0 0 6px 1px var(--c); }
 .chip kbd { margin-left: -2px; }
 .dock-tools { display: flex; align-items: center; gap: 4px; flex: none; }
 .dock-tools button, .dock-tools select { padding: 3px 7px; font-size: 12px; }

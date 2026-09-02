@@ -10,7 +10,7 @@ const store = require('./store');
 const { createBackend } = require('./backends');
 const { createTerminal } = require('./terminals');
 const { SessionManager } = require('./sessions');
-const { HookWatcher, hookStatus, installClaudeHooks, uninstallClaudeHooks, migrateHookPath } = require('./hooks');
+const { HookWatcher, hookStatus, installClaudeHooks, uninstallClaudeHooks, upgradeClaudeHooks, migrateHookPath } = require('./hooks');
 
 const argv = process.argv.slice(app.isPackaged ? 1 : 2);
 const CLI_FLAGS = ['--list', '--launch', '--focus', '--close', '--tile', '--cascade', '--displays', '--help'];
@@ -45,8 +45,11 @@ app.whenReady().then(() => {
   ensureHookScript();
   // ShellMan -> Satchel: repoint any hooks that still call the old ~/.shellman script.
   try { migrateHookPath(claudeConfigDirs(), OLD_HOOK_SCRIPT, HOOK_SCRIPT); } catch (e) { console.error('[satchel] hook migration:', e.message); }
+  // Wire hook events added since the user installed the hooks (e.g. SessionEnd), where installed.
+  try { upgradeClaudeHooks(claudeConfigDirs(), HOOK_SCRIPT); } catch (e) { console.error('[satchel] hook upgrade:', e.message); }
   const backend = createBackend();
-  manager = new SessionManager({ config: cfg, backend, terminal: createTerminal(cfg.terminal, backend), store, screen });
+  const isOwnWindow = (h) => [win, newWin].some((w) => w && !w.isDestroyed() && hwndOf(w) === h);
+  manager = new SessionManager({ config: cfg, backend, terminal: createTerminal(cfg.terminal, backend), store, screen, isOwnWindow });
   manager.on('error', (e) => console.error('[satchel]', e));
   if (cliMode) return runCli(backend);
 

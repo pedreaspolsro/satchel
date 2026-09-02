@@ -3,10 +3,10 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { SessionManager } = require('../src/main/sessions');
+const { SessionManager, withSessionName } = require('../src/main/sessions');
 
 /** In-memory backend/terminal/store/screen so the core can be tested on any OS. */
-function harness({ windows = [], parents = new Map(), foreground = null } = {}) {
+function harness({ windows = [], parents = new Map(), foreground = null, ownWindows = [] } = {}) {
   const state = { windows, parents, foreground, launched: [], bounds: [], focused: [] };
   const backend = {
     name: 'fake',
@@ -21,8 +21,11 @@ function harness({ windows = [], parents = new Map(), foreground = null } = {}) 
     minimize() {}, restore() {}, close() {},
   };
   const terminal = { name: 'fake', launch: (req) => { const pid = 5000 + state.launched.length; state.launched.push({ ...req, pid }); return { pid }; } };
-  const saved = { sessions: [] };
-  const store = { loadSessions: () => saved.sessions, saveSessions: (l) => { saved.sessions = l; }, loadState: () => ({}), saveState() {} };
+  const saved = { sessions: [], names: {} };
+  const store = {
+    loadSessions: () => saved.sessions, saveSessions: (l) => { saved.sessions = l; }, loadState: () => ({}), saveState() {},
+    loadNames: () => saved.names, saveNames: (n) => { saved.names = JSON.parse(JSON.stringify(n)); },
+  };
   const screen = {
     getPrimaryDisplay: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1000, height: 600 }, bounds: { x: 0, y: 0, width: 1000, height: 600 } }),
     getAllDisplays: () => [screen.getPrimaryDisplay()],
@@ -38,7 +41,7 @@ function harness({ windows = [], parents = new Map(), foreground = null } = {}) 
     attention: { onIdle: true, onHook: true },
   };
   // isAlive() uses process.kill(pid, 0); fake pids don't exist, so stub it for pending sessions.
-  const mgr = new SessionManager({ config, backend, terminal, store, screen });
+  const mgr = new SessionManager({ config, backend, terminal, store, screen, isOwnWindow: (h) => ownWindows.includes(h) });
   return { mgr, state, saved, config };
 }
 
@@ -107,7 +110,7 @@ test('launch passes env + SATCHEL_ID and attaches the window by pid', () => {
   assert.equal(state.launched.length, 1);
   assert.equal(state.launched[0].env.CLAUDE_CONFIG_DIR, 'C:/Users/me/.claude');
   assert.equal(state.launched[0].env.SATCHEL_ID, s.id);
-  assert.equal(state.launched[0].command, 'claude');
+  assert.equal(state.launched[0].command, "claude --name 'work'"); // the label becomes Claude's session name
   assert.equal(s.pending, true);
   state.windows.push({ id: 77, pid: 5000, title: '✳ Claude' });
   mgr.poll();
@@ -140,4 +143,118 @@ test('forget stops tracking a window and it is not re-adopted', () => {
   mgr.forget(mgr.snapshot()[0].id);
   mgr.poll();
   assert.equal(mgr.snapshot().length, 0);
+});
+
+test('withSessionName passes the label to plain `claude` commands only', () => {
+  assert.equal(withSessionName('claude', 'fix tests'), "claude --name 'fix tests'");
+  assert.equal(withSessionName('claude --dangerously-skip-permissions', 'x'), "claude --name 'x' --dangerously-skip-permissions");
+  assert.equal(withSessionName('claude', "it's"), "claude --name 'it'\\''s'"); // shell-quoted for bash -c
+  assert.equal(withSessionName('claude --resume', 'x'), 'claude --resume');    // a resumed session keeps its name
+  assert.equal(withSessionName('claude -c', 'x'), 'claude -c');
+  assert.equal(withSessionName('claude --name given', 'x'), 'claude --name given');
+  assert.equal(withSessionName('claude', ''), 'claude');
+  assert.equal(withSessionName('', 'x'), '');
+  assert.equal(withSessionName('claude-code-router', 'x'), 'claude-code-router');
+});
+
+test('launch honours nameClaudeSession: false', () => {
+  const { mgr, state, config } = harness();
+  config.nameClaudeSession = false;
+  mgr.launch({ profileName: 'Claude personal', label: 'work' });
+  assert.equal(state.launched[0].command, 'claude');
+});
+
+test('hook session_title names the row; a new Claude session in the same window drops it', () => {
+  const { mgr } = harness({
+    windows: [{ id: 10, pid: 100, title: 'MINGW64:/p/x' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  assert.equal(mgr.snapshot()[0].sessionTitle, null);
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'abc', source: 'startup' });
+  mgr.applyHookEvent({ event: 'UserPromptSubmit', sessionId: 'abc', sessionTitle: '  Fix the flaky test  ' });
+  assert.equal(mgr.snapshot()[0].sessionTitle, 'Fix the flaky test');
+  // /rename inside Claude arrives with the next event
+  mgr.applyHookEvent({ event: 'UserPromptSubmit', sessionId: 'abc', sessionTitle: 'Flaky test' });
+  assert.equal(mgr.snapshot()[0].sessionTitle, 'Flaky test');
+  // events without a title leave it alone; Claude exiting keeps the name but forgets the id
+  mgr.applyHookEvent({ event: 'Stop', sessionId: 'abc' });
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'abc', reason: 'prompt_input_exit' });
+  assert.equal(mgr.snapshot()[0].sessionTitle, 'Flaky test');
+  assert.equal(mgr.snapshot()[0].claudeSessionId, null);
+  // /clear (or a fresh `claude`) = a different session id in the same window -> automatic name reset
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'def', source: 'clear' });
+  assert.equal(mgr.snapshot()[0].sessionTitle, null);
+  assert.equal(mgr.snapshot()[0].claudeSessionId, 'def');
+});
+
+test('label and group stick to the Claude session id and come back with --resume in a new window', () => {
+  const { mgr, state, saved } = harness({
+    windows: [{ id: 10, pid: 100, title: '✳ Fix tests' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100], [666, 665], [665, 664], [664, 663], [663, 200]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  const a = mgr.snapshot()[0];
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'abc', sessionTitle: 'Fix tests' });
+  mgr.rename(a.id, 'my task');
+  mgr.setGroup(a.id, 'Company');
+  assert.equal(saved.names.abc.label, 'my task');
+  assert.equal(saved.names.abc.group, 'Company');
+  assert.equal(saved.names.abc.groupLocked, true);
+  // window closed; later `claude --resume` in a brand-new window (different pid, no SATCHEL_ID)
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'abc', reason: 'prompt_input_exit' });
+  state.windows.length = 0;
+  mgr.poll(); // fake pid 100 is not alive -> the old session is dropped
+  assert.equal(mgr.snapshot().length, 0);
+  state.windows.push({ id: 20, pid: 200, title: 'MINGW64:/p/x' });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 665, sessionId: 'abc', source: 'resume' });
+  const b = mgr.snapshot()[0];
+  assert.equal(b.pid, 200);
+  assert.equal(b.label, 'my task');
+  assert.equal(b.group, 'Company');
+  assert.equal(b.sessionTitle, 'Fix tests');
+  // the user clearing the label is remembered too (not resurrected on the next event)
+  mgr.rename(b.id, '');
+  mgr.applyHookEvent({ event: 'Stop', sessionId: 'abc' });
+  assert.equal(mgr.snapshot()[0].label, '');
+  assert.equal(saved.names.abc.label, '');
+});
+
+test('SessionStart prefers the process tree over a stale session id in another window', () => {
+  const { mgr } = harness({
+    windows: [{ id: 10, pid: 100, title: '✳ A' }, { id: 20, pid: 200, title: 'MINGW64:/p' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100], [666, 665], [665, 664], [664, 663], [663, 200]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'abc' });
+  assert.equal(mgr.snapshot()[0].claudeSessionId, 'abc');
+  // no SessionEnd arrived (older hook install); the same conversation is resumed in window 20
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 665, sessionId: 'abc', source: 'resume' });
+  assert.equal(mgr.snapshot()[1].claudeSessionId, 'abc');
+  // subsequent events (no ppid) go to the window that started it last
+  mgr.applyHookEvent({ event: 'Notification', sessionId: 'abc', message: 'Permission' });
+  assert.equal(mgr.snapshot()[1].attention, true);
+  assert.equal(mgr.snapshot()[0].attention, false);
+});
+
+test('marks the session whose window is in the foreground; while Satchel is focused, the last one', () => {
+  const { mgr, state } = harness({
+    windows: [{ id: 10, pid: 100, title: 'a' }, { id: 11, pid: 101, title: 'b' }],
+    foreground: 11,
+    ownWindows: [500],
+  });
+  mgr.poll();
+  assert.deepEqual(mgr.snapshot().map((s) => s.focused), [false, true]);
+  state.foreground = 10; mgr.poll();
+  assert.deepEqual(mgr.snapshot().map((s) => s.focused), [true, false]);
+  state.foreground = 500; mgr.poll(); // Satchel's own window: keep pointing at the terminal we came from
+  assert.deepEqual(mgr.snapshot().map((s) => s.focused), [true, false]);
+  state.foreground = 999; mgr.poll(); // some other app: nothing is current
+  assert.deepEqual(mgr.snapshot().map((s) => s.focused), [false, false]);
+  state.foreground = null; mgr.poll();
+  assert.deepEqual(mgr.snapshot().map((s) => s.focused), [false, false]);
 });

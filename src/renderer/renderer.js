@@ -41,9 +41,12 @@
     if (s.status === 'idle') return `idle · ${since}`;
     return 'shell';
   }
-  const rowClass = (s) => ['row', s.attention ? 'attention' : '', s.status, s.minimized ? 'minimized' : '', s.pending ? 'pending' : ''].filter(Boolean).join(' ');
+  const rowClass = (s) => ['row', s.attention ? 'attention' : '', s.status, s.minimized ? 'minimized' : '', s.pending ? 'pending' : '', s.focused ? 'focused' : ''].filter(Boolean).join(' ');
   const chipClass = (s) => rowClass(s).replace(/^row/, 'chip');
-  const displayLabel = (s) => s.label || s.cleanTitle || s.profile || `pid ${s.pid}`;
+  // Claude's topic: the live title while Claude runs (follows /rename instantly), otherwise the last
+  // session title the hooks reported (survives Claude exiting to the shell prompt).
+  const topic = (s) => (s.status !== 'unknown' && s.cleanTitle) || s.sessionTitle || '';
+  const displayLabel = (s) => s.label || topic(s) || s.cleanTitle || s.profile || `pid ${s.pid}`;
 
   // ---- tabs (shared by panel and dock) --------------------------------------------------
 
@@ -69,7 +72,7 @@
     }
     $('#list').innerHTML = list.map((s, i) => {
       const label = displayLabel(s);
-      const sub = s.label ? s.cleanTitle : (s.profile || '');
+      const sub = s.label ? (topic(s) || s.cleanTitle) : (s.profile || '');
       const exe = s.exe ? s.exe.replace(/\.exe$/i, '') : '';
       return `<div class="${rowClass(s)}" data-id="${esc(s.id)}" style="--c:${esc(s.color)}" tabindex="0">
         <div class="bar"></div>
@@ -110,7 +113,7 @@
       $('#dock-chips').innerHTML = `<span class="dock-empty">No sessions${state.tab !== 'All' ? ` in ${esc(state.tab)}` : ''}</span>`;
     } else {
       $('#dock-chips').innerHTML = list.map((s, i) => {
-        const tip = [statusText(s), s.cleanTitle || s.title, s.group, s.cwd, s.note].filter(Boolean).join('\n');
+        const tip = [statusText(s), topic(s) || s.cleanTitle || s.title, s.group, s.cwd, s.note].filter(Boolean).join('\n');
         return `<div class="${chipClass(s)}" data-id="${esc(s.id)}" style="--c:${esc(s.color)}" title="${esc(tip)}" tabindex="0">`
           + `<span class="bar"></span><i class="st"></i><span class="label">${esc(displayLabel(s))}</span>${i < 9 ? `<kbd>${i + 1}</kbd>` : ''}</div>`;
       }).join('');
@@ -169,7 +172,7 @@
     const span = row.querySelector('.label');
     const input = document.createElement('input');
     input.className = 'rename';
-    input.value = s.label || s.cleanTitle || '';
+    input.value = s.label || topic(s) || s.cleanTitle || '';
     span.replaceWith(input);
     state.editingId = id;
     let done = false;

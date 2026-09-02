@@ -14,7 +14,8 @@ const { isAlive, expandHome, statusFromTitle, cleanTitle, gridLayout, cascadeLay
 const { EVENTS_FILE } = require('./config');
 
 const PENDING_TIMEOUT_MS = 20000;
-const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId'];
+const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'sessionTitle'];
+const MAX_NAMES = 300; // remembered Claude sessions (label/group/title keyed by Claude session id)
 
 /** Compare directories loosely (slashes, trailing separators, case on Windows). */
 function sameDir(a, b) {
@@ -23,20 +24,40 @@ function sameDir(a, b) {
   return norm(a) === norm(b);
 }
 
+/** Quote for the POSIX shell the profile command runs in (bash -c / bash -lic). */
+function shellQuote(s) { return `'${String(s).replace(/'/g, `'\\''`)}'`; }
+
+/**
+ * Pass the Satchel label to Claude Code as the session name (`claude --name <label>`), so Claude's
+ * own terminal title and its --resume picker show the same name as the Satchel row. Only for plain
+ * `claude` commands: a resumed/continued session already has a name, and an explicit --name wins.
+ */
+function withSessionName(command, label) {
+  const cmd = String(command || '').trim();
+  const name = String(label || '').trim();
+  if (!name || !/^claude(\s|$)/.test(cmd)) return command;
+  if (/(^|\s)(--name|-n|--resume|-r|--continue|-c)(\s|=|$)/.test(cmd)) return command;
+  return `claude --name ${shellQuote(name)}${cmd.slice('claude'.length)}`;
+}
+
 class SessionManager extends EventEmitter {
-  constructor({ config, backend, terminal, store, screen }) {
+  constructor({ config, backend, terminal, store, screen, isOwnWindow }) {
     super();
     this.config = config;
     this.backend = backend;
     this.terminal = terminal;
     this.store = store;
     this.screen = screen;
+    this.isOwnWindow = typeof isOwnWindow === 'function' ? isOwnWindow : () => false; // is this hwnd one of Satchel's own windows?
     this.sessions = new Map();   // id -> session
     this.exeCache = new Map();   // pid -> lowercase exe basename
     this.ignored = new Set();    // "pid:hwnd" the user asked us to forget
+    this.names = typeof store.loadNames === 'function' ? (store.loadNames() || {}) : {}; // claudeSessionId -> { label, group, groupLocked, sessionTitle, updatedAt }
+    this.fg = null;              // foreground hwnd as of the last poll
     this.timer = null;
     this.lastEmitted = '';
     this.lastPersisted = '';
+    this.lastNames = '';
     this._restore();
   }
 
@@ -49,7 +70,7 @@ class SessionManager extends EventEmitter {
       id: null, label: '', profile: null, group: this.config.defaultGroup, cwd: null, createdAt: now,
       launched: false, pid: null, hwnd: null, exe: null, title: '', status: 'unknown', statusSince: now,
       attention: false, note: null, lastFocusedAt: 0, minimized: false, pending: false, pendingSince: 0,
-      claudeSessionId: null, groupLocked: false, ...over,
+      claudeSessionId: null, groupLocked: false, sessionTitle: null, ...over,
     };
   }
 
@@ -86,6 +107,7 @@ class SessionManager extends EventEmitter {
     if (this.exeCache.size > 4000) this.exeCache.clear();
 
     const fg = this.backend.foreground();
+    this.fg = fg;
     const byId = new Map(windows.map((w) => [w.id, w]));
     const claimed = new Set();
 
@@ -157,7 +179,8 @@ class SessionManager extends EventEmitter {
     if (!fs.existsSync(dir)) throw new Error(`Folder does not exist: ${dir}`);
     const id = crypto.randomUUID();
     const env = { ...(p.env || {}), SATCHEL_ID: id, SATCHEL_PROFILE: p.name, SATCHEL_EVENTS: EVENTS_FILE };
-    const { pid } = this.terminal.launch({ cwd: dir, env, title: label || p.name, command: p.command || '', shell: p.shell });
+    const command = this.config.nameClaudeSession === false ? (p.command || '') : withSessionName(p.command || '', label);
+    const { pid } = this.terminal.launch({ cwd: dir, env, title: label || p.name, command, shell: p.shell });
     const s = this._blank({
       id, label: (label || '').trim(), profile: p.name, group: p.group || this.config.defaultGroup, cwd: dir,
       launched: true, pid, pending: true, pendingSince: Date.now(),
@@ -270,16 +293,16 @@ class SessionManager extends EventEmitter {
    *   1. SATCHEL_ID env var (sessions we launched)
    *   2. Claude session id seen before
    *   3. process tree: walk up from the hook's parent until we hit a pid that owns a session window
+   * SessionStart tries the process tree before the session id: a `claude --resume` may bring a known
+   * session id into a *different* window than the one that ran it last.
    */
   _sessionForHook(ev) {
     if (ev.satchelId && this.sessions.has(ev.satchelId)) return this.sessions.get(ev.satchelId);
     const all = [...this.sessions.values()];
-    if (ev.sessionId) {
-      const s = all.find((x) => x.claudeSessionId === ev.sessionId);
-      if (s) return s;
-    }
-    const getParents = this.backend.processParentsDeep || this.backend.processParents;
-    if (ev.ppid && typeof getParents === 'function') {
+    const bySessionId = () => (ev.sessionId ? all.find((x) => x.claudeSessionId === ev.sessionId) : null) || null;
+    const byTree = () => {
+      const getParents = this.backend.processParentsDeep || this.backend.processParents;
+      if (!ev.ppid || typeof getParents !== 'function') return null;
       const byPid = new Map(all.filter((x) => x.pid).map((x) => [x.pid, x]));
       const parents = getParents.call(this.backend);
       let p = ev.ppid;
@@ -287,8 +310,18 @@ class SessionManager extends EventEmitter {
         if (byPid.has(p)) return byPid.get(p);
         p = parents.get(p);
       }
-    }
-    return null;
+      return null;
+    };
+    return ev.event === 'SessionStart' ? (byTree() || bySessionId()) : (bySessionId() || byTree());
+  }
+
+  /** Bring back what the user gave this Claude session last time it was in a window (label, group). */
+  _applyRemembered(s, sessionId) {
+    const rec = sessionId ? this.names[sessionId] : null;
+    if (!rec) return;
+    if (!s.label && rec.label) s.label = rec.label;
+    if (!s.groupLocked && rec.groupLocked && rec.group) { s.group = rec.group; s.groupLocked = true; }
+    if (!s.sessionTitle && rec.sessionTitle) s.sessionTitle = rec.sessionTitle;
   }
 
   /** Event shape: see hooks/claude-code-hook.js. Returns true if a session matched. */
@@ -296,6 +329,13 @@ class SessionManager extends EventEmitter {
     if (!ev || typeof ev !== 'object') return false;
     const s = this._sessionForHook(ev);
     if (!s) return false;
+    if (ev.event === 'SessionStart' && ev.sessionId && ev.sessionId !== s.claudeSessionId) {
+      // Another Claude session took over this window (`/clear`, a fresh `claude`, `--resume` of a
+      // different conversation): drop the previous conversation's automatic name.
+      s.sessionTitle = null;
+      // The conversation now lives here — no other window may still answer to its id.
+      for (const o of this.sessions.values()) if (o !== s && o.claudeSessionId === ev.sessionId) o.claudeSessionId = null;
+    }
     if (ev.sessionId) s.claudeSessionId = ev.sessionId;
     if (ev.cwd) s.cwd = ev.cwd;
     // Sort adopted windows into the group of the account they run under.
@@ -303,6 +343,9 @@ class SessionManager extends EventEmitter {
       const prof = (this.config.profiles || []).find((p) => p.env && sameDir(p.env.CLAUDE_CONFIG_DIR, ev.configDir));
       if (prof) { s.group = prof.group || s.group; s.profile = prof.name; }
     }
+    this._applyRemembered(s, ev.sessionId);
+    // Claude's own session name (/rename, --name, or the generated topic) — the row's automatic name.
+    if (typeof ev.sessionTitle === 'string' && ev.sessionTitle.trim()) s.sessionTitle = ev.sessionTitle.trim();
     const fg = this.backend.foreground();
     const onHook = (this.config.attention || {}).onHook !== false;
     const away = s.hwnd == null || s.hwnd !== fg;
@@ -310,15 +353,31 @@ class SessionManager extends EventEmitter {
       case 'UserPromptSubmit': s.attention = false; s.note = null; break;
       case 'Stop': if (onHook && away) this._flag(s, 'Finished'); break;
       case 'Notification': if (onHook && away) this._flag(s, ev.message || 'Needs your attention'); break;
+      case 'SessionEnd':
+        // Claude exited (or /clear'ed): the id no longer identifies this window, so a later --resume
+        // elsewhere is not misattributed to it. The name stays — it is still what ran here last.
+        if (!ev.sessionId || ev.sessionId === s.claudeSessionId) s.claudeSessionId = null;
+        break;
       default: break;
     }
     this._changed(true);
     return true;
   }
 
+  /** The session whose window is in the foreground; while Satchel itself is focused, the last one. */
+  _focusedId() {
+    const fg = this.fg;
+    if (fg == null) return null;
+    for (const s of this.sessions.values()) if (s.hwnd != null && s.hwnd === fg) return s.id;
+    if (!this.isOwnWindow(fg)) return null;
+    let best = null;
+    for (const s of this.sessions.values()) if (s.hwnd != null && s.lastFocusedAt && (!best || s.lastFocusedAt > best.lastFocusedAt)) best = s;
+    return best ? best.id : null;
+  }
+
   // ---- snapshots / persistence ----------------------------------------------------------
 
-  _view(s) {
+  _view(s, focusedId = this._focusedId()) {
     const group = (this.config.groups || []).find((g) => g.name === s.group);
     const profile = s.profile ? (this.config.profiles || []).find((p) => p.name === s.profile) : null;
     return {
@@ -326,13 +385,14 @@ class SessionManager extends EventEmitter {
       color: (group && group.color) || (profile && profile.color) || '#8b95a5',
       pid: s.pid, hwnd: s.hwnd, exe: s.exe, title: s.title,
       cleanTitle: cleanTitle(s.title, this.config.statusGlyphs),
+      sessionTitle: s.sessionTitle,
       status: s.status, statusSince: s.statusSince, attention: s.attention, note: s.note,
       cwd: s.cwd, createdAt: s.createdAt, launched: s.launched, minimized: s.minimized, pending: s.pending,
-      claudeSessionId: s.claudeSessionId,
+      claudeSessionId: s.claudeSessionId, focused: s.id === focusedId,
     };
   }
 
-  snapshot() { return this._ordered().map((s) => this._view(s)); }
+  snapshot() { const f = this._focusedId(); return this._ordered().map((s) => this._view(s, f)); }
 
   _changed(force = false) {
     const snap = this.snapshot();
@@ -347,10 +407,35 @@ class SessionManager extends EventEmitter {
   persist() {
     const list = this._ordered().map((s) => Object.fromEntries(PERSIST_FIELDS.map((k) => [k, s[k]])));
     const json = JSON.stringify(list);
-    if (json === this.lastPersisted) return;
-    this.lastPersisted = json;
-    try { this.store.saveSessions(list); } catch (e) { this.emit('error', e); }
+    if (json !== this.lastPersisted) {
+      this.lastPersisted = json;
+      try { this.store.saveSessions(list); } catch (e) { this.emit('error', e); }
+    }
+    this._persistNames();
+  }
+
+  /** Remember label/group/title per Claude session id, so they come back with `claude --resume`. */
+  _persistNames() {
+    if (typeof this.store.saveNames !== 'function') return;
+    let changed = false;
+    for (const s of this.sessions.values()) {
+      if (!s.claudeSessionId) continue;
+      const prev = this.names[s.claudeSessionId];
+      const rec = { label: s.label || '', group: s.group, groupLocked: !!s.groupLocked, sessionTitle: s.sessionTitle || null, updatedAt: prev ? prev.updatedAt : Date.now() };
+      const same = prev && prev.label === rec.label && prev.group === rec.group && prev.groupLocked === rec.groupLocked && prev.sessionTitle === rec.sessionTitle;
+      if (same) continue;
+      rec.updatedAt = Date.now();
+      this.names[s.claudeSessionId] = rec;
+      changed = true;
+    }
+    if (!changed) return;
+    const ids = Object.keys(this.names);
+    if (ids.length > MAX_NAMES) {
+      ids.sort((a, b) => (this.names[b].updatedAt || 0) - (this.names[a].updatedAt || 0));
+      for (const id of ids.slice(MAX_NAMES)) delete this.names[id];
+    }
+    try { this.store.saveNames(this.names); } catch (e) { this.emit('error', e); }
   }
 }
 
-module.exports = { SessionManager };
+module.exports = { SessionManager, withSessionName, shellQuote };
