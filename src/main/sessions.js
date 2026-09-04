@@ -68,6 +68,8 @@ class SessionManager extends EventEmitter {
     this.ignored = new Set();    // "pid:hwnd" the user asked us to forget
     this.names = typeof store.loadNames === 'function' ? (store.loadNames() || {}) : {}; // claudeSessionId -> { label, group, groupLocked, sessionTitle, updatedAt }
     this.fg = null;              // foreground hwnd as of the last poll
+    this.slow = false;           // hidden in the tray -> poll 5x slower
+    this._tick = 0;
     this.timer = null;
     this.lastEmitted = '';
     this.lastPersisted = '';
@@ -99,14 +101,51 @@ class SessionManager extends EventEmitter {
     this.stop();
     const tick = () => { try { this.poll(); } catch (e) { this.emit('error', e); } };
     tick();
-    this.timer = setInterval(tick, this.config.pollIntervalMs || 1000);
+    this.timer = setInterval(tick, (this.config.pollIntervalMs || 1000) * (this.slow ? 5 : 1));
   }
 
   stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
 
-  /** One reconciliation pass between OS windows and our session list. */
+  /** Nothing is on screen while Satchel sits in the tray: poll 5x slower (hooks stay instant). */
+  setSlow(on) {
+    if (this.slow === !!on) return;
+    this.slow = !!on;
+    if (this.timer) this.start();
+  }
+
+  /** One pass: usually a cheap refresh of the windows we track; a full reconcile when needed. */
   poll() {
     const now = Date.now();
+    this._tick++;
+    if (this._pollCheap(now)) { this._changed(); return; }
+    this._pollFull(now);
+  }
+
+  /**
+   * Refresh only tracked windows (title / minimized / foreground) — no EnumWindows sweep, no
+   * process lookups. Returns false when the full reconcile must run instead: every 5th tick
+   * (adoption of foreign windows), any pending or vanished window, or a backend without
+   * windowTitle().
+   */
+  _pollCheap(now) {
+    if (typeof this.backend.windowTitle !== 'function') return false;
+    if (this._tick % 5 === 1) return false; // tick 1 and every 5th: adoption sweep
+    const list = [...this.sessions.values()];
+    if (!list.length || list.some((s) => s.hwnd == null)) return false;
+    const updates = [];
+    for (const s of list) {
+      const title = this.backend.windowTitle(s.hwnd);
+      if (title == null) return false; // a window disappeared -> reconcile now
+      updates.push([s, title]);
+    }
+    const fg = this.backend.foreground();
+    this.fg = fg;
+    for (const [s, title] of updates) this._sync(s, { id: s.hwnd, pid: s.pid, exe: s.exe, title }, now, fg);
+    return true;
+  }
+
+  /** Full reconciliation between OS windows and our session list. */
+  _pollFull(now) {
     const adopt = new Set((this.config.adoptExecutables || []).map((s) => s.toLowerCase()));
     const windows = [];
     for (const w of this.backend.listWindows()) {
@@ -459,9 +498,12 @@ class SessionManager extends EventEmitter {
 
   _changed(force = false) {
     const snap = this.snapshot();
-    const json = JSON.stringify(snap);
-    if (force || json !== this.lastEmitted) {
-      this.lastEmitted = json;
+    // Compare without the raw title: it carries Claude's spinner glyph, which rotates every tick
+    // while a session works — repainting the UI for that would keep the renderer busy for nothing
+    // visible (the topic lives in cleanTitle, the animation is CSS).
+    const key = JSON.stringify(snap.map(({ title, ...rest }) => rest));
+    if (force || key !== this.lastEmitted) {
+      this.lastEmitted = key;
       this.emit('update', snap);
     }
     this.persist();

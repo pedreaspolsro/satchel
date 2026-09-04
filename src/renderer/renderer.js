@@ -121,6 +121,7 @@
   }
 
   function render() {
+    if (document.hidden) return; // hidden in the tray: nothing to paint (re-rendered on show)
     if (state.editingId) return; // don't blow away the rename input
     if (state.docked) { renderDock(); return; }
     $('#tabs').innerHTML = tabsHtml();
@@ -300,7 +301,8 @@
     });
     api.onSessions((list) => { state.sessions = list; render(); });
     api.onStartRename((id) => startRename(id));
-    setInterval(render, 5000); // keep the "since" durations fresh
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+    setInterval(render, 5000); // keep the "since" durations fresh (no-op while hidden)
   }
 
   function applyMode() {

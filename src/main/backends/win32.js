@@ -216,6 +216,12 @@ module.exports = {
     appBars.delete(hwnd);
   },
 
+  /** Title of one window we already track (cheap poll path); null when the window is gone. */
+  windowTitle(hwnd) {
+    if (!IsWindow(hwnd)) return null;
+    return windowTitle(hwnd).trim(); // module helper; trims Claude's trailing-space padding
+  },
+
   listWindows() {
     const out = [];
     EnumWindows((h) => {

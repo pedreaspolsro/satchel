@@ -22,10 +22,19 @@ class HookWatcher {
     // A hook may be appending right now (rare, ~ms) — then just skip what is there instead.
     try { fs.writeFileSync(this.file, ''); this.offset = 0; }
     catch { this.offset = fs.existsSync(this.file) ? fs.statSync(this.file).size : 0; }
-    fs.watchFile(this.file, { interval: 500 }, () => this._read());
+    // Event-driven where the OS supports it (no periodic stat, reacts faster); polling fallback.
+    try {
+      this.watcher = fs.watch(this.file, () => this._read());
+      this.watcher.on('error', () => { this.stop(); this._startPolling(); });
+    } catch { this._startPolling(); }
   }
 
-  stop() { fs.unwatchFile(this.file); }
+  _startPolling() { this.polling = true; fs.watchFile(this.file, { interval: 500 }, () => this._read()); }
+
+  stop() {
+    if (this.watcher) { try { this.watcher.close(); } catch { /* ignore */ } this.watcher = null; }
+    if (this.polling) { fs.unwatchFile(this.file); this.polling = false; }
+  }
 
   _read() {
     let st;

@@ -12,6 +12,7 @@ function harness({ windows = [], parents = new Map(), foreground = null, ownWind
     name: 'fake',
     capabilities: { list: true, focus: true, move: true },
     listWindows: () => state.windows.map((w) => ({ ...w })),
+    windowTitle: (id) => { const w = state.windows.find((x) => x.id === id); return w ? w.title : null; },
     processImage: (pid) => (state.windows.some((w) => w.pid === pid) ? 'C:/Git/usr/bin/mintty.exe' : null),
     processParents: () => state.parents,
     foreground: () => state.foreground,
@@ -143,6 +144,19 @@ test('forget stops tracking a window and it is not re-adopted', () => {
   mgr.forget(mgr.snapshot()[0].id);
   mgr.poll();
   assert.equal(mgr.snapshot().length, 0);
+});
+
+test('spinner-only title changes do not re-emit updates; real transitions do', () => {
+  const { mgr, state } = harness({ windows: [{ id: 10, pid: 100, title: '◐ Build' }], foreground: 999 });
+  let updates = 0;
+  mgr.on('update', () => updates++);
+  mgr.poll();
+  const base = updates;
+  state.windows[0].title = '◓ Build'; mgr.poll(); // cheap tick: same status, same topic
+  state.windows[0].title = '◑ Build'; mgr.poll();
+  assert.equal(updates, base);
+  state.windows[0].title = '✳ Build'; mgr.poll(); // working -> idle is a real change
+  assert.ok(updates > base);
 });
 
 test('withSessionName passes the label to plain `claude` commands only', () => {

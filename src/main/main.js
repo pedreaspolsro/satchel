@@ -178,10 +178,12 @@ function createWindow() {
   }
   const me = win;
   me.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+  me.on('show', () => { if (manager) manager.setSlow(false); });
+  me.on('hide', () => { if (manager) manager.setSlow(true); });
   me.once('ready-to-show', () => {
     const hidden = firstShow && cfg.startMinimized;
     firstShow = false;
-    if (hidden) return;
+    if (hidden) { if (manager) manager.setSlow(true); return; }
     me.show();
     if (dock) applyDock();
   });
