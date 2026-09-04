@@ -8,6 +8,7 @@ const invoke = (channel) => (...args) => ipcRenderer.invoke(channel, ...args);
 contextBridge.exposeInMainWorld('satchel', {
   getSessions: invoke('sessions:get'),
   launch: invoke('sessions:launch'),
+  resumeCandidates: invoke('sessions:resumeCandidates'),
   newSession: invoke('ui:newSession'),
   newSessionDone: invoke('ui:newSessionDone'),
   focus: invoke('sessions:focus'),
@@ -22,6 +23,7 @@ contextBridge.exposeInMainWorld('satchel', {
   minimizeGroup: invoke('sessions:minimizeGroup'),
   raiseGroup: invoke('sessions:raiseGroup'),
   contextMenu: invoke('sessions:contextMenu'),
+  dockInteractive: invoke('ui:dockInteractive'),
   getConfig: invoke('config:get'),
   openConfig: invoke('config:open'),
   reloadConfig: invoke('config:reload'),

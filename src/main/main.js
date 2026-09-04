@@ -167,6 +167,10 @@ function createWindow() {
       frame: false, resizable: false, movable: false, minimizable: false, maximizable: false, fullscreenable: false,
       thickFrame: false, // no invisible Win32 resize border, so the strip sits flush with the screen edge
       skipTaskbar: true, alwaysOnTop: true, type: 'toolbar',
+      // Taskbar behaviour: the strip never takes activation (WS_EX_NOACTIVATE), so the FIRST click
+      // on a chip raises the terminal — no click-to-focus-Satchel first. Inline rename and the
+      // context menu get focus temporarily via setDockInteractive().
+      focusable: false,
     });
   } else {
     const bounds = validBounds(state.bounds) || { width: 560, height: 640 };
@@ -502,6 +506,7 @@ function registerIpc() {
   const h = (channel, fn) => ipcMain.handle(channel, (_e, ...args) => fn(...args));
   h('sessions:get', () => manager.snapshot());
   h('sessions:launch', (req) => manager.launch(req));
+  h('sessions:resumeCandidates', () => manager.resumeCandidates());
   h('ui:newSession', () => openNewSession());
   h('ui:newSessionDone', () => closeNewSession());
   h('sessions:focus', (id) => manager.focus(id));
@@ -516,6 +521,7 @@ function registerIpc() {
   h('sessions:minimizeGroup', (group) => manager.minimizeGroup(group));
   h('sessions:raiseGroup', (group) => manager.raiseGroup(group));
   h('sessions:contextMenu', (id) => showContextMenu(id));
+  h('ui:dockInteractive', (on) => setDockInteractive(on));
   h('config:get', () => publicConfig());
   h('config:open', () => shell.openPath(config.FILE));
   h('config:reload', () => {
@@ -570,6 +576,16 @@ function registerIpc() {
   });
 }
 
+/**
+ * The docked strip is non-activating so clicks pass straight through to the chips; typing (inline
+ * rename) and native menus still need real focus — grant it for the moment and give it back after.
+ */
+function setDockInteractive(on) {
+  if (!win || win.isDestroyed() || !dockState()) return;
+  win.setFocusable(!!on);
+  if (on) win.focus(); else win.blur();
+}
+
 function showContextMenu(id) {
   const s = manager.get(id);
   if (!s || !win) return;
@@ -590,7 +606,9 @@ function showContextMenu(id) {
     { type: 'separator' },
     { label: `pid ${s.pid} · hwnd ${s.hwnd ?? '-'}${s.claudeSessionId ? ' · claude ' + s.claudeSessionId.slice(0, 8) : ''}`, enabled: false },
   ];
-  Menu.buildFromTemplate(template).popup({ window: win });
+  const docked = !!dockState();
+  if (docked) setDockInteractive(true); // a menu on a non-activating window would dismiss itself
+  Menu.buildFromTemplate(template).popup({ window: win, callback: () => { if (docked) setDockInteractive(false); } });
 }
 
 // ---- cli (development / scripting) ---------------------------------------------------------------
@@ -603,7 +621,7 @@ async function runCli(backend) {
     if (argv.includes('--list')) {
       await out({ backend: backend.name, capabilities: backend.capabilities, sessions: manager.snapshot() });
     } else if (argv.includes('--launch')) {
-      const s = manager.launch({ profileName: argValue('--launch'), cwd: argValue('--cwd'), label: argValue('--label') });
+      const s = manager.launch({ profileName: argValue('--launch'), cwd: argValue('--cwd'), label: argValue('--label'), resume: process.argv.includes('--resume') });
       const attached = await waitFor(() => { manager.poll(); const x = manager.snapshot().find((v) => v.id === s.id); return x && x.hwnd ? x : null; }, 15000);
       await out(attached || { ...s, warning: 'window not detected within 15s' });
     } else if (argv.includes('--focus')) {

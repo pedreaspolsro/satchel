@@ -180,6 +180,7 @@
       if (done) return;
       done = true;
       state.editingId = null;
+      if (state.docked) api.dockInteractive(false).catch(() => {}); // hand focus back (strip is non-activating)
       if (commit) { try { await api.rename(id, input.value); } catch (e) { showErr(e); } }
       refresh();
     };
@@ -190,8 +191,9 @@
     });
     input.addEventListener('blur', () => finish(true));
     input.addEventListener('click', (e) => e.stopPropagation());
-    input.focus();
-    input.select();
+    // The docked strip does not activate on click; typing needs the window focused for real first.
+    const focusInput = () => { input.focus(); input.select(); };
+    if (state.docked) api.dockInteractive(true).then(focusInput, focusInput); else focusInput();
   }
 
   // ---- displays -------------------------------------------------------------------------

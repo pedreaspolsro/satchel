@@ -57,10 +57,20 @@ both panel and docked mode, so you can set the folder and a description everywhe
 last profile you used. The tray's *New session ▸ profile* still launches a profile immediately with
 its defaults.
 
+Tick **Resume** to continue an existing Claude session instead of starting a new one: the Label
+field then names the session to resume (with suggestions from every session Satchel remembers —
+picking one also brings its folder along). A remembered name resumes precisely by session id;
+an unknown name is handed to `claude --resume "<name>"`, which matches Claude's own session titles;
+an empty name opens Claude's interactive session picker in the new window. A name that is already
+open in a window is refused — focus that window instead. Resume only works with profiles whose
+command runs `claude`.
+
 **Dock:** the ⤒ button (or tray → *Dock*) turns the panel into a taskbar-like strip on the top or
 bottom edge of the selected display, laid out left→right as: group pills (filters) │ Tile / Cascade /
 Min all │ one chip per session (colour bar, label, status dot, orange when it needs you) │
-`+ New`, ⚙, ⤓ undock. On Windows the strip registers as an *AppBar*, so the work area shrinks and
+`+ New`, ⚙, ⤓ undock. Like the real taskbar, the strip never takes focus: the first click on a chip
+raises that terminal directly (no click-to-focus-Satchel first); inline rename and the context menu
+grab focus just for their moment. On Windows the strip registers as an *AppBar*, so the work area shrinks and
 maximized windows (and Satchel's own tiling) stay clear of it; elsewhere it is a plain
 always-on-top strip. `dock.height` in config sets the thickness; the mode and the selected group are
 remembered across restarts. In the docked strip, clicking a group pill also **brings that group's
@@ -201,6 +211,7 @@ they work for sessions started from Satchel (adopted windows rely on title polli
 ```bash
 npx electron . --list                                   # dump sessions as JSON
 npx electron . --launch "Claude personal" --cwd P:/x --label "fix tests"
+npx electron . --launch "Claude personal" --label "fix tests" --resume   # continue that session
 npx electron . --focus <pid|id-prefix>
 npx electron . --tile Personal --display <id>
 npx electron . --displays

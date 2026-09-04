@@ -40,6 +40,20 @@ function withSessionName(command, label) {
   return `claude --name ${shellQuote(name)}${cmd.slice('claude'.length)}`;
 }
 
+/**
+ * Turn the profile command into a resuming one: `claude --resume <ref>` (ref = session id or
+ * Claude session title; without a ref Claude opens its interactive session picker). Keeps the
+ * profile's extra flags; a profile that already resumes/continues is left alone. Only claude
+ * profiles can resume — anything else would silently replace the user's command.
+ */
+function withResume(command, ref) {
+  const cmd = String(command || '').trim();
+  if (cmd && !/^claude(\s|$)/.test(cmd)) throw new Error('Resume works only with profiles that run "claude"');
+  const base = cmd || 'claude';
+  if (/(^|\s)(--resume|-r|--continue|-c)(\s|=|$)/.test(base)) return base;
+  return `claude --resume${ref ? ` ${shellQuote(ref)}` : ''}${base.slice('claude'.length)}`;
+}
+
 class SessionManager extends EventEmitter {
   constructor({ config, backend, terminal, store, screen, isOwnWindow }) {
     super();
@@ -172,22 +186,71 @@ class SessionManager extends EventEmitter {
 
   // ---- commands -------------------------------------------------------------------------
 
-  launch({ profileName, cwd, label } = {}) {
+  launch({ profileName, cwd, label, resume } = {}) {
     const p = (this.config.profiles || []).find((x) => x.name === profileName);
     if (!p) throw new Error(`Unknown profile "${profileName}"`);
-    const dir = expandHome(cwd || p.cwd || '~');
+    let command = p.command || '';
+    let target = null;
+    if (resume) {
+      target = this._resumeTarget(label);
+      // Remembered session -> precise resume by id; unknown name -> Claude matches its own
+      // session titles; no name -> Claude's interactive session picker opens in the window.
+      command = withResume(command, target ? target.sessionId : ((label || '').trim() || null));
+    } else if (this.config.nameClaudeSession !== false) {
+      command = withSessionName(command, label);
+    }
+    const dir = expandHome(cwd || (target && target.cwd) || p.cwd || '~');
     if (!fs.existsSync(dir)) throw new Error(`Folder does not exist: ${dir}`);
     const id = crypto.randomUUID();
     const env = { ...(p.env || {}), SATCHEL_ID: id, SATCHEL_PROFILE: p.name, SATCHEL_EVENTS: EVENTS_FILE };
-    const command = this.config.nameClaudeSession === false ? (p.command || '') : withSessionName(p.command || '', label);
     const { pid } = this.terminal.launch({ cwd: dir, env, title: label || p.name, command, shell: p.shell });
     const s = this._blank({
       id, label: (label || '').trim(), profile: p.name, group: p.group || this.config.defaultGroup, cwd: dir,
       launched: true, pid, pending: true, pendingSince: Date.now(),
+      // Pre-seed identity from the remembered session so grouping/naming apply immediately.
+      claudeSessionId: target ? target.sessionId : null, sessionTitle: target ? target.sessionTitle || null : null,
     });
+    if (target) this._applyRemembered(s, target.sessionId);
     this.sessions.set(id, s);
     this._changed(true);
     return this._view(s);
+  }
+
+  /**
+   * Resolve "resume by name" against the remembered sessions (label first, then Claude's own
+   * session title; newest wins). A name that only matches sessions already open in a window is an
+   * error — resuming those would attach the same conversation twice.
+   */
+  _resumeTarget(label) {
+    const name = String(label || '').trim().toLowerCase();
+    if (!name) return null;
+    const live = new Set([...this.sessions.values()].map((s) => s.claudeSessionId).filter(Boolean));
+    let best = null;
+    let liveHit = null;
+    for (const [sessionId, r] of Object.entries(this.names)) {
+      const rank = (r.label || '').trim().toLowerCase() === name ? 2
+        : (r.sessionTitle || '').trim().toLowerCase() === name ? 1 : 0;
+      if (!rank) continue;
+      if (live.has(sessionId)) { liveHit = r; continue; }
+      if (!best || rank > best.rank || (rank === best.rank && (r.updatedAt || 0) > (best.updatedAt || 0))) {
+        best = { sessionId, rank, ...r };
+      }
+    }
+    if (!best && liveHit) throw new Error(`"${(liveHit.label || liveHit.sessionTitle || '').trim()}" is already open — focus that window instead`);
+    return best;
+  }
+
+  /** Closed-but-remembered Claude sessions, newest first — the "Resume" suggestions in the dialog. */
+  resumeCandidates() {
+    const live = new Set([...this.sessions.values()].map((s) => s.claudeSessionId).filter(Boolean));
+    return Object.entries(this.names)
+      .filter(([id, r]) => !live.has(id) && ((r.label || '').trim() || (r.sessionTitle || '').trim()))
+      .map(([sessionId, r]) => ({
+        sessionId, name: (r.label || '').trim() || (r.sessionTitle || '').trim(),
+        group: r.group || null, cwd: r.cwd || null, updatedAt: r.updatedAt || 0,
+      }))
+      .sort((a, b) => b.updatedAt - a.updatedAt)
+      .slice(0, 50);
   }
 
   get(id) { return this.sessions.get(id) || null; }
@@ -421,8 +484,8 @@ class SessionManager extends EventEmitter {
     for (const s of this.sessions.values()) {
       if (!s.claudeSessionId) continue;
       const prev = this.names[s.claudeSessionId];
-      const rec = { label: s.label || '', group: s.group, groupLocked: !!s.groupLocked, sessionTitle: s.sessionTitle || null, updatedAt: prev ? prev.updatedAt : Date.now() };
-      const same = prev && prev.label === rec.label && prev.group === rec.group && prev.groupLocked === rec.groupLocked && prev.sessionTitle === rec.sessionTitle;
+      const rec = { label: s.label || '', group: s.group, groupLocked: !!s.groupLocked, sessionTitle: s.sessionTitle || null, cwd: s.cwd || null, updatedAt: prev ? prev.updatedAt : Date.now() };
+      const same = prev && prev.label === rec.label && prev.group === rec.group && prev.groupLocked === rec.groupLocked && prev.sessionTitle === rec.sessionTitle && prev.cwd === rec.cwd;
       if (same) continue;
       rec.updatedAt = Date.now();
       this.names[s.claudeSessionId] = rec;
@@ -438,4 +501,4 @@ class SessionManager extends EventEmitter {
   }
 }
 
-module.exports = { SessionManager, withSessionName, shellQuote };
+module.exports = { SessionManager, withSessionName, withResume, shellQuote };

@@ -157,6 +157,51 @@ test('withSessionName passes the label to plain `claude` commands only', () => {
   assert.equal(withSessionName('claude-code-router', 'x'), 'claude-code-router');
 });
 
+test('resume launches `claude --resume` against the remembered session', () => {
+  const { mgr, state } = harness();
+  mgr.names.abc = { label: 'My Task', group: 'Company', groupLocked: true, sessionTitle: 'Fix tests', cwd: process.cwd(), updatedAt: 2 };
+  mgr.names.old = { label: 'my task', group: 'Other', groupLocked: false, sessionTitle: null, cwd: null, updatedAt: 1 };
+  const s = mgr.launch({ profileName: 'Claude personal', label: 'my task', resume: true });
+  assert.equal(state.launched[0].command, "claude --resume 'abc'"); // newest label match wins, no --name added
+  assert.equal(s.claudeSessionId, 'abc');    // pre-seeded so hooks/grouping attach immediately
+  assert.equal(s.sessionTitle, 'Fix tests');
+  assert.equal(s.group, 'Company');          // remembered user-chosen group applies right away
+  // Claude's own title also resolves
+  mgr.names.xyz = { label: '', group: 'Other', groupLocked: false, sessionTitle: 'Refactor', cwd: null, updatedAt: 3 };
+  mgr.launch({ profileName: 'Claude personal', label: 'Refactor', resume: true });
+  assert.equal(state.launched[1].command, "claude --resume 'xyz'");
+  // unknown name -> Claude matches its own session titles; empty -> interactive picker
+  mgr.launch({ profileName: 'Claude personal', label: 'never seen', resume: true });
+  assert.equal(state.launched[2].command, "claude --resume 'never seen'");
+  mgr.launch({ profileName: 'Claude personal', resume: true });
+  assert.equal(state.launched[3].command, 'claude --resume');
+});
+
+test('resume refuses a session that is already open in a window', () => {
+  const { mgr } = harness({
+    windows: [{ id: 10, pid: 100, title: '✳ x' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100]]),
+  });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'abc' });
+  mgr.rename(mgr.snapshot()[0].id, 'My Task'); // persists names.abc with the label
+  assert.throws(() => mgr.launch({ profileName: 'Claude personal', label: 'my task', resume: true }), /already open/);
+  // candidates list also hides the live one
+  assert.deepEqual(mgr.resumeCandidates(), []);
+});
+
+test('resume keeps profile flags, respects an already-resuming profile, rejects non-claude commands', () => {
+  const { mgr, state, config } = harness();
+  config.profiles.push({ name: 'Skippy', group: 'Other', cwd: '.', command: 'claude --dangerously-skip-permissions' });
+  config.profiles.push({ name: 'Resumer', group: 'Other', cwd: '.', command: 'claude --resume' });
+  config.profiles.push({ name: 'NotClaude', group: 'Other', cwd: '.', command: 'npm start' });
+  mgr.launch({ profileName: 'Skippy', label: 'x', resume: true });
+  assert.equal(state.launched[0].command, "claude --resume 'x' --dangerously-skip-permissions");
+  mgr.launch({ profileName: 'Resumer', label: 'x', resume: true });
+  assert.equal(state.launched[1].command, 'claude --resume');
+  assert.throws(() => mgr.launch({ profileName: 'NotClaude', label: 'x', resume: true }), /only with profiles that run "claude"/);
+});
+
 test('launch honours nameClaudeSession: false', () => {
   const { mgr, state, config } = harness();
   config.nameClaudeSession = false;
