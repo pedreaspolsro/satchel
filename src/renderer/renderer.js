@@ -282,6 +282,7 @@
     $('#dock-cascade').addEventListener('click', () => api.cascade(state.tab, state.docked && state.docked.displayId).catch(showErr));
     $('#dock-minall').addEventListener('click', () => api.minimizeGroup(state.tab).catch(showErr));
     $('#dock-config').addEventListener('click', () => api.openConfig());
+    $('#dock-hide').addEventListener('click', () => api.hideToTray().catch(showErr));
     $('#dock-undock').addEventListener('click', () => api.setDock('none').catch(showErr));
 
     document.addEventListener('keydown', (e) => {

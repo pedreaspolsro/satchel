@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld('satchel', {
   setAlwaysOnTop: invoke('window:setAlwaysOnTop'),
   getAlwaysOnTop: invoke('window:getAlwaysOnTop'),
   setDock: invoke('window:setDock'),
+  hideToTray: invoke('window:hideToTray'),
   pickDir: invoke('dialog:pickDir'),
   appInfo: invoke('app:info'),
   hookStatus: invoke('hooks:status'),

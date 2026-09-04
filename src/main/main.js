@@ -301,6 +301,8 @@ function hideWindow() {
 
 function toggleWindow() {
   if (!win) return;
+  // The docked strip is non-activating (never focused): visible = hide, hidden = show.
+  if (dockState()) { if (win.isVisible()) hideWindow(); else showWindow(); return; }
   if (win.isVisible() && win.isFocused()) { hideWindow(); return; }
   showWindow();
 }
@@ -332,6 +334,8 @@ function stripOf(edge, m, t) {
   }
 }
 
+const dockKeyOf = (d, dock) => `${d.id}:${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}@${d.scaleFactor}:${dock.edge}:${dockThickness()}`;
+
 /** Put the docked strip on its edge and reserve that edge (Windows: AppBar). */
 function applyDock() {
   const dock = dockState();
@@ -348,7 +352,7 @@ function applyDock() {
   placeDock();
   win.setAlwaysOnTop(true);
   console.log(`[satchel] dock ${dock.edge} on display ${d.id} (${d.bounds.width}x${d.bounds.height}@${d.scaleFactor}): requested ${JSON.stringify(requested)} -> granted ${JSON.stringify(strip)} (physical) -> window ${JSON.stringify(win.getBounds())} (DIP)`);
-  lastDockKey = `${d.id}:${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}@${d.scaleFactor}:${dock.edge}:${dockThickness()}`;
+  lastDockKey = dockKeyOf(d, dock);
   // Reserving the edge changes the work area, and Chromium answers that by nudging its windows back
   // inside the new work area (out of our own band). Re-check shortly after, and periodically.
   setTimeout(verifyDock, 300);
@@ -386,7 +390,7 @@ function reapplyDockIfNeeded() {
   const dock = dockState();
   if (!dock || !win || win.isDestroyed() || !win.isVisible()) return;
   const d = dockDisplay(dock);
-  const key = `${d.id}:${d.bounds.x},${d.bounds.y},${d.bounds.width},${d.bounds.height}@${d.scaleFactor}:${dock.edge}:${dockThickness()}`;
+  const key = dockKeyOf(d, dock);
   if (key !== lastDockKey) applyDock();
   else setTimeout(verifyDock, 200); // work-area-only change (taskbar moved/auto-hid): Chromium may have nudged us
 }
@@ -538,6 +542,7 @@ function registerIpc() {
   h('window:setAlwaysOnTop', (v) => { win.setAlwaysOnTop(!!v); return win.isAlwaysOnTop(); });
   h('window:getAlwaysOnTop', () => win.isAlwaysOnTop());
   h('window:setDock', (edge, displayId) => setDock(edge, displayId));
+  h('window:hideToTray', () => hideWindow());
   h('dialog:pickDir', async (def) => {
     const parent = BrowserWindow.getFocusedWindow() || win; // parent to the New-session popup when it's up
     const r = await dialog.showOpenDialog(parent, { properties: ['openDirectory'], defaultPath: def || undefined });

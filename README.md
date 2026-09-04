@@ -73,7 +73,9 @@ raises that terminal directly (no click-to-focus-Satchel first); inline rename a
 grab focus just for their moment. On Windows the strip registers as an *AppBar*, so the work area shrinks and
 maximized windows (and Satchel's own tiling) stay clear of it; elsewhere it is a plain
 always-on-top strip. `dock.height` in config sets the thickness; the mode and the selected group are
-remembered across restarts. In the docked strip, clicking a group pill also **brings that group's
+remembered across restarts. The `–` button hides the whole bar to the tray and gives the reserved
+desktop space back — the tray icon (single click), tray → *Show Satchel*, or the global hotkey
+brings it back. In the docked strip, clicking a group pill also **brings that group's
 non-minimized windows to the front** (re-click to re-raise) — set `raiseGroupOnSelect: false` in
 config to turn that off.
 
