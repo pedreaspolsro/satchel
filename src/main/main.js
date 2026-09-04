@@ -256,7 +256,7 @@ function debounce(fn, ms) {
 function openNewSession() {
   if (newWin && !newWin.isDestroyed()) { newWin.show(); newWin.focus(); return; }
   const d = screen.getDisplayNearestPoint(screen.getCursorScreenPoint());
-  const w = 400, h = 216;
+  const w = 400, h = 248; // fits Profile / Folder / Label / Resume rows + error line + actions
   newWin = new BrowserWindow({
     width: w,
     height: h,
