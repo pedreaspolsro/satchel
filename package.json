@@ -1,7 +1,7 @@
 {
   "name": "satchel",
   "productName": "Satchel",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Launcher and window manager for terminal windows - built for juggling many Claude Code sessions, usable for any shell.",
   "keywords": [
     "electron",
