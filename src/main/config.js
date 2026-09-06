@@ -9,6 +9,11 @@ const path = require('path');
 const DIR = process.env.SATCHEL_HOME || path.join(os.homedir(), '.satchel');
 const FILE = path.join(DIR, 'config.json');
 const EVENTS_FILE = path.join(DIR, 'events.jsonl');
+// Control socket the CLI uses to talk to a running GUI. Windows named pipes live in a flat
+// per-machine namespace, so the name is derived from the data dir (SATCHEL_HOME stays isolated).
+const CONTROL_SOCKET = process.platform === 'win32'
+  ? `\\\\.\\pipe\\satchel-${require('crypto').createHash('sha1').update(DIR.toLowerCase()).digest('hex').slice(0, 12)}`
+  : path.join(DIR, 'control.sock');
 const PALETTE = ['#4f9cff', '#ff9f43', '#2ecc71', '#e056fd', '#ff6b6b', '#f9ca24', '#00d2d3'];
 
 function detectMintty() {
@@ -115,4 +120,4 @@ function save(cfg) {
   fs.writeFileSync(FILE, JSON.stringify(cfg, null, 2));
 }
 
-module.exports = { DIR, OLD_DIR, FILE, EVENTS_FILE, load, save, defaults };
+module.exports = { DIR, OLD_DIR, FILE, EVENTS_FILE, CONTROL_SOCKET, load, save, defaults };

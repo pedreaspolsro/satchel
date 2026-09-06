@@ -17,7 +17,10 @@ tabs, shows what each one is doing, and lets you focus / tile / minimize them.
   On first run Satchel detects your Claude config dirs (`~/.claude`, `~/.claude-<name>`) and creates
   one profile per account (`CLAUDE_CONFIG_DIR` set accordingly) plus a plain `Shell` profile.
 * **Launch** spawns the terminal with that environment and remembers the process. **Adopt** picks up
-  terminal windows you opened yourself (anything in `adoptExecutables`).
+  terminal windows you opened yourself (anything in `adoptExecutables`). On Windows, launched
+  terminals start from the OS's *canonical* user environment (what Explorer would give a
+  double-clicked app), so nothing Satchel's own process happened to inherit leaks in — the
+  profile's `env` is applied on top and always wins.
 * **Status** comes from the window title. Claude Code rewrites it: `✳ topic` when idle,
   `◐ ◓ ◑ ◒` while working. A session that goes working → idle while you are elsewhere is flagged
   **needs you** (row highlight + tab badge + desktop notification) until you focus it.
@@ -220,8 +223,10 @@ npx electron . --tile Personal --display <id>
 npx electron . --displays
 ```
 
-The CLI runs its own instance, so a launch done from the CLI while the GUI is open shows up in the
-GUI as an *adopted* window (a control socket for the GUI is on the roadmap).
+When the GUI is running, the CLI talks to it over a control socket (named pipe on Windows,
+`~/.satchel/control.sock` elsewhere): `--list` shows the GUI's live sessions with their labels and
+attention state, and a `--launch` belongs to the GUI like one from the **+ New** dialog. Without a
+running GUI the CLI falls back to a standalone instance as before.
 
 Dev aids for the GUI: `--screenshot <file.png>` captures the panel after `--screenshot-delay <ms>`
 (default 2500); add `--screenshot-every <ms>` to keep overwriting it. `SATCHEL_HOME=<dir>` points
@@ -254,7 +259,6 @@ hook matching through the process tree, auto-grouping, launch, tile, forget);
 * title-token matching for terminal servers (gnome-terminal, Terminal.app) where pid ≠ window owner
 * packaging as a signed installer (electron-builder), auto-update
 * per-row cwd for adopted windows, "open folder" / "copy path" actions
-* control socket so the CLI talks to the running GUI instead of starting its own instance
 
 ## Credits & license
 

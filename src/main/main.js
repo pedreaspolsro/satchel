@@ -11,6 +11,7 @@ const { createBackend } = require('./backends');
 const { createTerminal } = require('./terminals');
 const { SessionManager } = require('./sessions');
 const { HookWatcher, hookStatus, installClaudeHooks, uninstallClaudeHooks, upgradeClaudeHooks, migrateHookPath } = require('./hooks');
+const { startControlServer, controlRequest } = require('./control');
 
 const argv = process.argv.slice(app.isPackaged ? 1 : 2);
 const CLI_FLAGS = ['--list', '--launch', '--focus', '--close', '--tile', '--cascade', '--displays', '--help'];
@@ -35,6 +36,7 @@ let lastDockKey = null;
 let dockTarget = null; // DIP rect the docked strip must occupy
 let manager = null;
 let hooks = null;
+let control = null;
 let cfg = null;
 
 app.setAppUserModelId('sk.pedrea.satchel');
@@ -67,6 +69,7 @@ app.whenReady().then(() => {
   });
   manager.on('attention', notifyAttention);
   manager.start();
+  control = startControlServer(manager, config.CONTROL_SOCKET); // lets the CLI talk to this instance
   registerHotkey();
   screen.on('display-metrics-changed', () => reapplyDockIfNeeded());
   screen.on('display-added', () => reapplyDockIfNeeded());
@@ -93,6 +96,7 @@ function shutdown() {
   releaseDock();
   if (manager) { manager.stop(); manager.persist(); }
   if (hooks) hooks.stop();
+  if (control) { try { control.close(); } catch { /* ignore */ } control = null; }
   globalShortcut.unregisterAll();
   if (tray) { tray.destroy(); tray = null; }
 }
@@ -620,10 +624,51 @@ function showContextMenu(id) {
 
 // ---- cli (development / scripting) ---------------------------------------------------------------
 
+/** The socket message for the given CLI flags, or null when the command has no socket form. */
+function cliMessage() {
+  if (argv.includes('--list')) return { cmd: 'list' };
+  if (argv.includes('--launch')) return { cmd: 'launch', profileName: argValue('--launch'), cwd: argValue('--cwd'), label: argValue('--label'), resume: argv.includes('--resume') };
+  if (argv.includes('--focus')) return { cmd: 'focus', ref: argValue('--focus') };
+  if (argv.includes('--close')) return { cmd: 'close', ref: argValue('--close') };
+  if (argv.includes('--tile')) return { cmd: 'tile', group: argValue('--tile'), displayId: Number(argValue('--display')) || undefined };
+  if (argv.includes('--cascade')) return { cmd: 'cascade', group: argValue('--cascade'), displayId: Number(argValue('--display')) || undefined };
+  if (argv.includes('--displays')) return { cmd: 'displays' };
+  return null;
+}
+
+/**
+ * Try the command against a running GUI over the control socket, so `--list` shows the GUI's
+ * live sessions and `--launch`ed windows belong to it. Returns false when no GUI is listening
+ * (the caller then runs the command in this standalone instance).
+ */
+async function cliViaGui(out) {
+  const msg = cliMessage();
+  if (!msg) return false;
+  const first = await controlRequest(config.CONTROL_SOCKET, msg);
+  if (!first) return false;
+  if (!first.ok) { process.stderr.write(`${first.error}\n`); app.exit(1); return true; }
+  let result = first.result;
+  if (msg.cmd === 'launch' && result && result.id && !result.hwnd) {
+    // Wait until the GUI has attached the window, like the standalone path does.
+    const t0 = Date.now();
+    while (Date.now() - t0 < 15000) {
+      await new Promise((r) => setTimeout(r, 500));
+      const r = await controlRequest(config.CONTROL_SOCKET, { cmd: 'list' });
+      const x = r && r.ok && r.result.sessions.find((v) => v.id === result.id);
+      if (x && x.hwnd) { result = x; break; }
+    }
+    if (!result.hwnd) result = { ...result, warning: 'window not detected within 15s' };
+  }
+  await out(result);
+  app.exit(0);
+  return true;
+}
+
 async function runCli(backend) {
   const out = (o) => new Promise((r) => process.stdout.write(`${JSON.stringify(o, null, 2)}\n`, r));
   const waitFor = async (fn, ms) => { const t0 = Date.now(); for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await new Promise((r) => setTimeout(r, 250)); } };
   try {
+    if (await cliViaGui(out)) return;
     manager.poll();
     if (argv.includes('--list')) {
       await out({ backend: backend.name, capabilities: backend.capabilities, sessions: manager.snapshot() });
