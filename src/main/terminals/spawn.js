@@ -29,6 +29,24 @@ function scrubEnv(env) {
 }
 
 /**
+ * Base environment for a launched terminal. Preferred: the OS's canonical user environment from
+ * the backend (Windows: CreateEnvironmentBlock — immune to ANY junk Satchel itself inherited,
+ * and picks up setx/registry changes without a restart). Fallback: the scrubbed inherited env.
+ * Adapters merge the profile's own env on top either way, so explicit profile values always win.
+ */
+function baseEnv(backend) {
+  if (backend && typeof backend.cleanEnv === 'function') {
+    try {
+      const env = backend.cleanEnv();
+      // Sanity: a real user block has a path + profile (Windows spells it "Path" — match any case).
+      const has = (name) => env && Object.keys(env).some((k) => k.toLowerCase() === name && env[k]);
+      if (has('path') && has('userprofile')) return env;
+    } catch { /* fall through */ }
+  }
+  return scrubEnv(process.env);
+}
+
+/**
  * Start a detached process and return { pid }. The env is passed through as given — build it as
  * { ...scrubEnv(process.env), ...profileEnv } in the adapter (see above).
  * Prefers the backend's native spawner (Windows: CreateProcessW without handle inheritance);
@@ -44,4 +62,4 @@ function spawnProcess(backend, { exe, args, cwd, env }) {
   return { pid: child.pid };
 }
 
-module.exports = { spawnProcess, scrubEnv, isSessionMarker };
+module.exports = { spawnProcess, scrubEnv, baseEnv, isSessionMarker };

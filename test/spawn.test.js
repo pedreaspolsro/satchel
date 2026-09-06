@@ -3,7 +3,7 @@
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { scrubEnv, isSessionMarker } = require('../src/main/terminals/spawn');
+const { scrubEnv, baseEnv, isSessionMarker } = require('../src/main/terminals/spawn');
 
 test('scrubEnv removes agent-session markers but keeps real config', () => {
   const env = {
@@ -31,6 +31,24 @@ test('scrubEnv removes agent-session markers but keeps real config', () => {
   }
   // adapters merge the profile env AFTER scrubbing, so an explicit profile value still wins
   assert.equal({ ...scrubEnv(env), NO_COLOR: '1' }.NO_COLOR, '1');
+});
+
+test('baseEnv prefers the backend clean environment and falls back to the scrubbed process env', () => {
+  const clean = { Path: 'C:/reg', USERPROFILE: 'C:/u', SystemRoot: 'C:/Windows' };
+  assert.deepEqual(baseEnv({ cleanEnv: () => clean }), clean);
+  const saved = process.env.CLAUDECODE;
+  process.env.CLAUDECODE = '1';
+  try {
+    // Anything not a plausible user block -> scrubbed inherited env instead.
+    for (const bad of [null, {}, { Path: 'x' }, { USERPROFILE: 'y' }]) {
+      const out = baseEnv({ cleanEnv: () => bad });
+      assert.ok(!('CLAUDECODE' in out), `fallback must scrub (got clean=${JSON.stringify(bad)})`);
+    }
+    assert.ok(!('CLAUDECODE' in baseEnv({ cleanEnv: () => { throw new Error('boom'); } })));
+    assert.ok(!('CLAUDECODE' in baseEnv(null)));
+  } finally {
+    if (saved === undefined) delete process.env.CLAUDECODE; else process.env.CLAUDECODE = saved;
+  }
 });
 
 test('mintty adapter builds a scrubbed env (regression: scrubEnv must be imported there)', () => {

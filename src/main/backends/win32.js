@@ -55,6 +55,8 @@ function msysParents() {
 const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
 const shell32 = koffi.load('shell32.dll');
+const advapi32 = koffi.load('advapi32.dll');
+const userenv = koffi.load('userenv.dll');
 
 // ---- AppBar (screen-edge reservation, what the taskbar uses) ----------------------------------
 const SHAppBarMessage = shell32.func('uintptr_t __stdcall SHAppBarMessage(uint32_t msg, void *data)');
@@ -105,6 +107,11 @@ const MONITORINFO_SIZE = 40; // cbSize@0, rcMonitor@4, rcWork@20, dwFlags@36
 const OpenProcess = kernel32.func('intptr_t __stdcall OpenProcess(uint32_t access, int32_t inherit, uint32_t pid)');
 const QueryFullProcessImageNameW = kernel32.func('bool __stdcall QueryFullProcessImageNameW(intptr_t h, uint32_t flags, void *buf, void *size)');
 const CloseHandle = kernel32.func('bool __stdcall CloseHandle(intptr_t h)');
+const GetCurrentProcess = kernel32.func('intptr_t __stdcall GetCurrentProcess()');
+const OpenProcessToken = advapi32.func('int __stdcall OpenProcessToken(intptr_t process, uint32_t access, void *token)');
+// Out-param declared as a typed double pointer so koffi hands back a decodable pointer value.
+const CreateEnvironmentBlock = userenv.func('CreateEnvironmentBlock', 'int', [koffi.out(koffi.pointer(koffi.pointer('uint16'))), 'intptr', 'int32']);
+const DestroyEnvironmentBlock = userenv.func('DestroyEnvironmentBlock', 'int', [koffi.pointer('uint16')]);
 // NB: Win32 BOOL is a 32-bit int — never declare it as koffi's 1-byte `bool` for parameters.
 const CreateProcessW = kernel32.func('int __stdcall CreateProcessW(str16 app, void *cmdline, void *pa, void *ta, int32_t inherit, uint32_t flags, void *env, str16 cwd, void *si, void *pi)');
 const GetLastError = kernel32.func('uint32_t __stdcall GetLastError()');
@@ -214,6 +221,46 @@ module.exports = {
     if (!appBars.has(hwnd)) return;
     SHAppBarMessage(ABM_REMOVE, appBarData(hwnd, 0, null));
     appBars.delete(hwnd);
+  },
+
+  /**
+   * The user's canonical environment, freshly composed by Windows (registry system+user vars,
+   * PATH concatenation, USERPROFILE/APPDATA/…) — exactly what Explorer hands a double-clicked
+   * app. Launched terminals use it as their base, so junk inherited by Satchel's own process
+   * (agent-session markers, NO_COLOR, ad-hoc shell vars) never reaches them. Null on failure.
+   */
+  cleanEnv() {
+    const tokBuf = Buffer.alloc(8);
+    if (!OpenProcessToken(GetCurrentProcess(), 0x000A /* TOKEN_QUERY | TOKEN_DUPLICATE */, tokBuf)) return null;
+    const token = Number(tokBuf.readBigUInt64LE(0));
+    const out = [null];
+    try {
+      if (!CreateEnvironmentBlock(out, token, 0) || !out[0]) return null;
+      // "NAME=value\0NAME=value\0…\0\0" in UTF-16. Read it in small chunks — koffi's str16 decode
+      // crashes on this pointer, and small chunks keep any read past the terminator harmless.
+      const CHUNK = 128;
+      const units = [];
+      let prevZero = false;
+      outer: for (let off = 0; off < 1 << 21; off += CHUNK * 2) {
+        const a = koffi.decode(out[0], off, koffi.array('uint16', CHUNK));
+        for (let i = 0; i < CHUNK; i++) {
+          if (a[i] === 0 && prevZero) break outer;
+          prevZero = a[i] === 0;
+          units.push(a[i]);
+        }
+      }
+      const env = {};
+      for (const s of Buffer.from(Uint16Array.from(units).buffer).toString('utf16le').split('\0')) {
+        const eq = s.indexOf('=');
+        if (eq > 0) env[s.slice(0, eq)] = s.slice(eq + 1); // skips cmd's hidden "=C:=…" entries
+      }
+      return Object.keys(env).length ? env : null;
+    } catch {
+      return null;
+    } finally {
+      if (out[0]) DestroyEnvironmentBlock(out[0]);
+      CloseHandle(token);
+    }
   },
 
   /** Title of one window we already track (cheap poll path); null when the window is gone. */

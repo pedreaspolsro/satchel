@@ -9,7 +9,7 @@
  */
 const fs = require('fs');
 const path = require('path');
-const { spawnProcess, scrubEnv } = require('./spawn');
+const { spawnProcess, baseEnv } = require('./spawn');
 
 function findMintty() {
   const candidates = [
@@ -39,7 +39,7 @@ module.exports = (cfg = {}, backend = null) => ({
     //  - CHERE_INVOKING=1 keeps the shell in `cwd` instead of jumping to ~ (like "Git Bash Here")
     //  - EXEPATH points at the Git install root (git-bash.exe sets this; the bare mintty launch doesn't)
     const fullEnv = {
-      ...scrubEnv(process.env), // drop agent-session leftovers; profile env below still wins
+      ...baseEnv(backend), // canonical user env (or scrubbed inherited); profile env below still wins
       MSYSTEM: process.env.MSYSTEM || 'MINGW64',
       CHERE_INVOKING: '1',
       EXEPATH: cfg.exepath || gitRoot,
