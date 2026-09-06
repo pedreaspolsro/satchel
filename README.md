@@ -96,9 +96,10 @@ at the terminal you came from.
 ## Install on another machine
 
 **Another Windows x64 PC:** the built app is self-contained — Electron/Chromium and koffi's native
-binary are bundled, so **no Node or Electron install is required on the target**. Copy the whole
-`dist\Satchel-win32-x64\` folder (≈330 MB — the exe needs its sibling DLLs/`.pak` files) and run
-`Satchel.exe`. First launch of an unsigned exe may trip SmartScreen (*More info → Run anyway*).
+binary are bundled, so **no Node or Electron install is required on the target**. Grab the zip from
+the [Releases page](https://github.com/pedreaspolsro/satchel/releases) (or copy your own
+`dist\Satchel-win32-x64\` folder — ≈330 MB, the exe needs its sibling DLLs/`.pak` files), unpack,
+and run `Satchel.exe`. First launch of an unsigned exe may trip SmartScreen (*More info → Run anyway*).
 
 On first run it writes `~/.satchel/config.json` on **that** machine, auto-detecting Git's mintty
 path and creating one profile per `~/.claude*` config dir found there. Adjust the profiles' `cwd`
