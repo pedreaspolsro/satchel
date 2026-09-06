@@ -52,6 +52,52 @@ function msysParents() {
   return map;
 }
 
+/**
+ * Live working directory of the shell inside each given window: Map<window pid, "X:\…">.
+ * The window process is mintty; its shell child's cwd sits behind the MSYS /proc/<pid>/cwd
+ * symlink — a filesystem synthesized by msys-2.0.dll that only MSYS processes can see — so a
+ * helper bash resolves all of them in one batched call. Non-MSYS windows simply get no entry.
+ */
+function msysShellCwds(winpids) {
+  const result = new Map();
+  const ps = findMsysPs();
+  if (!ps || !winpids.length) return result;
+  const bash = path.join(path.dirname(ps), 'bash.exe');
+  if (!fs.existsSync(bash)) return result;
+  let out;
+  try { out = execFileSync(ps, ['-l'], { encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch { return result; }
+  const rows = [];
+  for (const line of out.split('\n')) {
+    const m = line.match(/^\s*[A-Z]?\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s/);
+    if (!m) continue;
+    rows.push({ pid: Number(m[1]), ppid: Number(m[2]), winpid: Number(m[4]), cmd: line.trim().split(/\s+/).pop() });
+  }
+  const byWin = new Map(rows.map((r) => [r.winpid, r]));
+  const targets = [];
+  for (const w of new Set(winpids)) {
+    const owner = byWin.get(w); // the window's own MSYS row (mintty)
+    if (!owner) continue;
+    const shell = rows.find((r) => r.ppid === owner.pid && /(bash|zsh|fish|dash|sh)$/.test(r.cmd));
+    if (shell) targets.push({ winpid: w, pid: shell.pid });
+  }
+  if (!targets.length) return result;
+  const script = targets
+    .map((t) => `printf '%s\\t%s\\n' ${t.winpid} "$(cygpath -w "$(readlink /proc/${t.pid}/cwd)" 2>/dev/null)"`)
+    .join(';');
+  let res;
+  try { res = execFileSync(bash, ['-c', script], { encoding: 'utf8', windowsHide: true, timeout: 3000, stdio: ['ignore', 'pipe', 'ignore'] }); }
+  catch { return result; }
+  for (const line of res.split('\n')) {
+    const i = line.indexOf('\t');
+    if (i <= 0) continue;
+    const win = Number(line.slice(0, i));
+    const cwd = line.slice(i + 1).trim();
+    if (win && cwd) result.set(win, cwd);
+  }
+  return result;
+}
+
 const user32 = koffi.load('user32.dll');
 const kernel32 = koffi.load('kernel32.dll');
 const shell32 = koffi.load('shell32.dll');
@@ -262,6 +308,9 @@ module.exports = {
       CloseHandle(token);
     }
   },
+
+  /** See msysShellCwds — Map<window pid, live shell cwd> for the given window pids. */
+  shellCwds(winpids) { return msysShellCwds(winpids); },
 
   /** Title of one window we already track (cheap poll path); null when the window is gone. */
   windowTitle(hwnd) {

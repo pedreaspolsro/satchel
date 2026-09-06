@@ -146,6 +146,8 @@ class SessionManager extends EventEmitter {
 
   /** Full reconciliation between OS windows and our session list. */
   _pollFull(now) {
+    this._sweep = (this._sweep || 0) + 1;
+    if (this._sweep % 6 === 2) this.refreshCwds(); // ≈ every 30 s while visible; skips sweep 1 (startup)
     const adopt = new Set((this.config.adoptExecutables || []).map((s) => s.toLowerCase()));
     const windows = [];
     for (const w of this.backend.listWindows()) {
@@ -415,6 +417,25 @@ class SessionManager extends EventEmitter {
       return null;
     };
     return ev.event === 'SessionStart' ? (byTree() || bySessionId()) : (bySessionId() || byTree());
+  }
+
+  /**
+   * Refresh each window's live shell cwd (adopted shells, and launched ones after a `cd`).
+   * Sessions with a running Claude keep the hook-reported directory — that is the project dir.
+   * Costs two helper processes, so it runs on a slow cadence plus on demand (context menu).
+   */
+  refreshCwds() {
+    if (typeof this.backend.shellCwds !== 'function') return;
+    const targets = [...this.sessions.values()].filter((s) => s.hwnd != null && s.pid && !s.claudeSessionId);
+    if (!targets.length) return;
+    let cwds;
+    try { cwds = this.backend.shellCwds(targets.map((s) => s.pid)); } catch { return; }
+    let changed = false;
+    for (const s of targets) {
+      const cwd = cwds.get(s.pid);
+      if (cwd && cwd !== s.cwd) { s.cwd = cwd; changed = true; }
+    }
+    if (changed) this._changed();
   }
 
   /** Bring back what the user gave this Claude session last time it was in a window (label, group). */

@@ -84,7 +84,9 @@ body.newwin { padding: 12px; background: var(--bg); }
 .l2 { color: #c3c9d3; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; min-height: 1.35em; }
 .l3 { display: flex; gap: 8px; color: var(--muted); font-size: 11px; overflow: hidden; white-space: nowrap; }
 .note { color: var(--att); }
-.meta { overflow: hidden; text-overflow: ellipsis; }
+.meta { overflow: hidden; text-overflow: ellipsis; flex: none; }
+.l3 .cwd { overflow: hidden; text-overflow: ellipsis; cursor: pointer; min-width: 0; }
+.l3 .cwd:hover { color: var(--text); text-decoration: underline; }
 
 .st { width: 9px; height: 9px; border-radius: 50%; background: #555c68; flex: none; }
 .row.working .st { background: var(--work); animation: pulse 1.2s infinite; }

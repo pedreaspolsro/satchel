@@ -41,6 +41,15 @@ test('cleanEnv builds the canonical user environment, independent of process env
   }
 });
 
+test('shellCwds resolves live cwds for MSYS terminal windows', { skip: !onWindows }, () => {
+  const b = require('../src/main/backends/win32');
+  const minttys = b.listWindows().filter((w) => { const img = b.processImage(w.pid); return img && /mintty/i.test(img); });
+  const map = b.shellCwds(minttys.map((w) => w.pid));
+  assert.ok(map instanceof Map);
+  for (const [, cwd] of map) assert.match(cwd, /^[A-Za-z]:[\\/]/, `not a Windows path: ${cwd}`);
+  if (minttys.length) assert.ok(map.size >= 1, 'expected a cwd for at least one live mintty window');
+});
+
 test('listWindows returns titled top-level windows', { skip: !onWindows }, () => {
   const b = require('../src/main/backends/win32');
   const wins = b.listWindows();

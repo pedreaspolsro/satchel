@@ -13,6 +13,7 @@ function harness({ windows = [], parents = new Map(), foreground = null, ownWind
     capabilities: { list: true, focus: true, move: true },
     listWindows: () => state.windows.map((w) => ({ ...w })),
     windowTitle: (id) => { const w = state.windows.find((x) => x.id === id); return w ? w.title : null; },
+    shellCwds: (pids) => { const m = new Map(); for (const p of pids) if (state.cwds && state.cwds.has(p)) m.set(p, state.cwds.get(p)); return m; },
     processImage: (pid) => (state.windows.some((w) => w.pid === pid) ? 'C:/Git/usr/bin/mintty.exe' : null),
     processParents: () => state.parents,
     foreground: () => state.foreground,
@@ -144,6 +145,25 @@ test('forget stops tracking a window and it is not re-adopted', () => {
   mgr.forget(mgr.snapshot()[0].id);
   mgr.poll();
   assert.equal(mgr.snapshot().length, 0);
+});
+
+test('refreshCwds applies the live shell cwd; a running Claude keeps the hook-reported dir', () => {
+  const { mgr, state } = harness({
+    windows: [{ id: 10, pid: 100, title: 'MINGW64:/p' }, { id: 11, pid: 101, title: '✳ x' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 101]]),
+    foreground: 999,
+  });
+  state.cwds = new Map([[100, 'P:\\live'], [101, 'P:\\shell-of-claude-window']]);
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'abc', cwd: 'P:/claude-project' });
+  mgr.refreshCwds();
+  const [a, b] = mgr.snapshot();
+  assert.equal(a.cwd, 'P:\\live');           // plain shell: live cwd fills in
+  assert.equal(b.cwd, 'P:/claude-project');  // Claude session: hook dir wins
+  // after Claude exits, the live shell cwd takes over
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'abc', reason: 'prompt_input_exit' });
+  mgr.refreshCwds();
+  assert.equal(mgr.snapshot()[1].cwd, 'P:\\shell-of-claude-window');
 });
 
 test('spinner-only title changes do not re-emit updates; real transitions do', () => {

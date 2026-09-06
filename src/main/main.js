@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 // Copyright (c) 2026 PEDREA, spol. s r. o.
 'use strict';
-const { app, BrowserWindow, ipcMain, screen, globalShortcut, shell, Notification, Menu, dialog, Tray, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, screen, globalShortcut, shell, clipboard, Notification, Menu, dialog, Tray, nativeImage } = require('electron');
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
@@ -531,6 +531,7 @@ function registerIpc() {
   h('sessions:minimizeGroup', (group) => manager.minimizeGroup(group));
   h('sessions:raiseGroup', (group) => manager.raiseGroup(group));
   h('sessions:contextMenu', (id) => showContextMenu(id));
+  h('sessions:openFolder', (id) => { const s = manager.get(id); if (s && s.cwd) shell.openPath(s.cwd); });
   h('ui:dockInteractive', (on) => setDockInteractive(on));
   h('config:get', () => publicConfig());
   h('config:open', () => shell.openPath(config.FILE));
@@ -598,6 +599,7 @@ function setDockInteractive(on) {
 }
 
 function showContextMenu(id) {
+  try { manager.refreshCwds(); } catch { /* menu still works with the last known cwd */ }
   const s = manager.get(id);
   if (!s || !win) return;
   const safe = (fn) => () => { try { fn(); } catch (e) { console.error('[satchel]', e.message); } };
@@ -608,6 +610,9 @@ function showContextMenu(id) {
       label: 'Move to group',
       submenu: manager.groupNames().map((g) => ({ label: g, type: 'radio', checked: g === s.group, click: safe(() => manager.setGroup(id, g)) })),
     },
+    { type: 'separator' },
+    { label: 'Open folder', enabled: !!s.cwd, click: safe(() => shell.openPath(s.cwd)) },
+    { label: 'Copy path', enabled: !!s.cwd, click: safe(() => clipboard.writeText(s.cwd)) },
     { type: 'separator' },
     s.minimized
       ? { label: 'Restore', enabled: s.hwnd != null, click: safe(() => manager.restore(id)) }

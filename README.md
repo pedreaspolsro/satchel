@@ -91,7 +91,11 @@ you. `startMinimized: true` starts hidden (handy for autostart); `Satchel.exe --
 Keyboard: `Ctrl+N` new session · `Ctrl+1..9` focus the n-th row of the current tab · `F2` rename
 the focused row · `Esc` close the form · global `Ctrl+Alt+S` shows/hides Satchel.
 
-Row click = focus that terminal. Right-click / `⋯` = rename, move to group, minimize, close, forget.
+Row click = focus that terminal. Right-click / `⋯` = rename, move to group, **open folder**,
+**copy path**, minimize, close, forget. Each row knows its working directory — Claude sessions
+report theirs through the hooks, and for plain shells (adopted windows included) Satchel reads the
+live cwd of the shell inside the window, so it stays correct after a `cd`. The folder shown in a
+row's meta line is clickable and opens in Explorer.
 The row (or docked chip) of the terminal that is currently in the foreground is marked with `▸`, a
 lighter background and a glow in its group colour; while Satchel itself has focus it keeps pointing
 at the terminal you came from.
@@ -258,7 +262,6 @@ hook matching through the process tree, auto-grouping, launch, tile, forget);
 * macOS backend (AX API), Linux X11 test pass, Wayland status-only mode
 * title-token matching for terminal servers (gnome-terminal, Terminal.app) where pid ≠ window owner
 * packaging as a signed installer (electron-builder), auto-update
-* per-row cwd for adopted windows, "open folder" / "copy path" actions
 
 ## Credits & license
 

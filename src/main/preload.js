@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('satchel', {
   minimizeGroup: invoke('sessions:minimizeGroup'),
   raiseGroup: invoke('sessions:raiseGroup'),
   contextMenu: invoke('sessions:contextMenu'),
+  openFolder: invoke('sessions:openFolder'),
   dockInteractive: invoke('ui:dockInteractive'),
   getConfig: invoke('config:get'),
   openConfig: invoke('config:open'),

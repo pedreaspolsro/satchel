@@ -79,7 +79,7 @@
         <div class="body">
           <div class="l1"><i class="st"></i><span class="label">${esc(label)}</span>${i < 9 ? `<kbd>${i + 1}</kbd>` : ''}<span class="grow"></span><span class="status">${esc(statusText(s))}</span></div>
           <div class="l2">${esc(sub)}</div>
-          <div class="l3">${s.note ? `<span class="note">${esc(s.note)}</span>` : ''}<span class="meta">${esc(s.group)}${s.cwd ? ` · ${esc(s.cwd)}` : ''}${exe ? ` · ${esc(exe)}` : ''} · ${s.pid}</span></div>
+          <div class="l3">${s.note ? `<span class="note">${esc(s.note)}</span>` : ''}<span class="meta">${esc(s.group)}</span>${s.cwd ? `<span class="cwd" data-act="cwd" title="Open folder">${esc(s.cwd)}</span>` : ''}<span class="meta">${exe ? `${esc(exe)} · ` : ''}${s.pid}</span></div>
         </div>
         <div class="actions">
           <button class="icon" data-act="rename" title="Rename (F2)">✎</button>
@@ -229,11 +229,16 @@
   function sessionClick(e) {
     const el = e.target.closest('.row, .chip');
     if (!el || e.target.closest('input')) return;
+    // Right-click belongs to sessionContext (the menu). Because that handler preventDefault()s the
+    // contextmenu event, Chromium also delivers an auxclick for button 2 — which used to fall
+    // through to focus() and raise the terminal under the freshly opened menu.
+    if (e.button > 1) return;
     const id = el.dataset.id;
     const act = (e.target.closest('[data-act]') || {}).dataset?.act;
     if (act === 'rename') return startRename(id);
     if (act === 'min') return api.minimize(id).catch(showErr);
     if (act === 'menu') return api.contextMenu(id);
+    if (act === 'cwd') return api.openFolder(id).catch(showErr);
     if (e.button === 1) { e.preventDefault(); return api.minimize(id).catch(showErr); }
     api.focus(id).catch(showErr);
   }
