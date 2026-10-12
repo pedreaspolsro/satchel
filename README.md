@@ -56,9 +56,10 @@ Requires Node ≥ 20 (Electron 39 and @electron/packager 18 are pinned because t
 on Node 20). `npm run icon` regenerates `build/icon.png` / `icon.ico` from `build/make-icon.js`.
 
 **New session:** `+ New` (or `Ctrl+N`) opens the same small **Profile / Folder / Label** dialog in
-both panel and docked mode, so you can set the folder and a description everywhere. It remembers the
-last profile you used. The tray's *New session ▸ profile* still launches a profile immediately with
-its defaults.
+both panel and docked mode, so you can set the folder and a description everywhere. It preselects
+the profile (Claude account) of the terminal you were just working in — else the last one you used —
+and each profile remembers the folder it was last launched in. The tray's *New session ▸ profile*
+still launches a profile immediately with its defaults.
 
 Tick **Resume** to continue an existing Claude session instead of starting a new one: the Label
 field then names the session to resume (with suggestions from every session Satchel remembers —
@@ -67,6 +68,17 @@ an unknown name is handed to `claude --resume "<name>"`, which matches Claude's 
 an empty name opens Claude's interactive session picker in the new window. A name that is already
 open in a window is refused — focus that window instead. Resume only works with profiles whose
 command runs `claude`.
+
+**Reopen closed windows (and everything after a PC restart):** like a browser's *reopen closed
+tab*. Every tracked window that closes goes onto a stack (`~/.satchel/closed.json`); the global
+`Ctrl+Alt+T` (`reopenHotkey`), `Ctrl+Shift+T` while the panel has focus, or tray → *Reopen …*
+brings the most recent back, and tray → *Recently closed* lists older ones. Windows that close
+together — as all of them do when the PC restarts — are one entry, so after a restart a single
+`Ctrl+Alt+T` reopens the whole last session. Each window comes back in its folder, under its
+account, with its label and group, at its old position and size (maximized/minimized too): a Claude
+conversation resumes by session id (`claude --resume <id>`), a window where Claude had already exited
+reopens as a shell under the same account, and adopted plain shells reopen with the shell profile.
+Nothing reopens by itself. Tray → *Start with Windows* starts Satchel at login.
 
 **Dock:** the ⤒ button (or tray → *Dock*) turns the panel into a taskbar-like strip on the top or
 bottom edge of the selected display, laid out left→right as: group pills (filters) │ Tile / Cascade /
@@ -83,13 +95,15 @@ non-minimized windows to the front** (re-click to re-raise) — set `raiseGroupO
 config to turn that off.
 
 **Tray:** closing the panel hides it to the tray (`closeToTray`, default on). Click the tray icon to
-toggle the panel; right-click for *Show*, *New session ▸ profile*, *Tile all*, *Minimize all*, *Quit*.
+toggle the panel; right-click for *Show*, *New session ▸ profile*, *Reopen …*, *Recently closed ▸*,
+*Dock ▸*, *Tile all*, *Minimize all*, *Start with Windows*, *Quit*.
 The tooltip shows the session summary and the icon gets an orange badge while any session needs
 you. `startMinimized: true` starts hidden (handy for autostart); `Satchel.exe --quit` /
 `satchel.bat --quit` stops a running instance.
 
-Keyboard: `Ctrl+N` new session · `Ctrl+1..9` focus the n-th row of the current tab · `F2` rename
-the focused row · `Esc` close the form · global `Ctrl+Alt+S` shows/hides Satchel.
+Keyboard: `Ctrl+N` new session · `Ctrl+Shift+T` reopen closed window(s) · `Ctrl+1..9` focus the
+n-th row of the current tab · `F2` rename the focused row · `Esc` close the form · global
+`Ctrl+Alt+S` shows/hides Satchel · global `Ctrl+Alt+T` reopens closed window(s).
 
 Row click = focus that terminal. Right-click / `⋯` = rename, move to group, **open folder**,
 **copy path**, minimize, close, forget. Each row knows its working directory — Claude sessions
@@ -134,6 +148,7 @@ experimental/X11-only, macOS is a stub). You'd package for that OS and finish it
   "pollIntervalMs": 1000,
   "alwaysOnTop": true,
   "hotkey": "CommandOrControl+Alt+S",
+  "reopenHotkey": "CommandOrControl+Alt+T",  // reopen closed window(s); "" turns it off
   "notifications": true,
   "nameClaudeSession": true,                 // "+ New" label -> `claude --name <label>` (see hooks section)
   "adoptForeign": true,                      // track terminals you opened outside Satchel
@@ -251,8 +266,9 @@ hook matching through the process tree, auto-grouping, launch, tile, forget);
 
 ```
 ~/.satchel/config.json     profiles, groups, terminal, options
-~/.satchel/sessions.json   labels/groups of live sessions (survives restarts)
+~/.satchel/sessions.json   labels/groups/positions of live sessions (survives restarts)
 ~/.satchel/names.json      label/group/title per Claude session id (comes back with --resume)
+~/.satchel/closed.json     recently closed windows, the "reopen" stack
 ~/.satchel/state.json      window position, pin state
 ~/.satchel/events.jsonl    hook events (append-only, safe to delete)
 ```

@@ -129,6 +129,7 @@ const EnumWindows = user32.func('bool __stdcall EnumWindows(EnumWindowsProc *cb,
 const IsWindow = user32.func('bool __stdcall IsWindow(intptr_t hwnd)');
 const IsWindowVisible = user32.func('bool __stdcall IsWindowVisible(intptr_t hwnd)');
 const IsIconic = user32.func('bool __stdcall IsIconic(intptr_t hwnd)');
+const IsZoomed = user32.func('bool __stdcall IsZoomed(intptr_t hwnd)');
 const GetWindow = user32.func('intptr_t __stdcall GetWindow(intptr_t hwnd, uint32_t cmd)');
 const GetWindowLongPtrW = user32.func('intptr_t __stdcall GetWindowLongPtrW(intptr_t hwnd, int index)');
 const GetWindowTextLengthW = user32.func('int __stdcall GetWindowTextLengthW(intptr_t hwnd)');
@@ -198,7 +199,7 @@ function envBlock(env) {
 const GW_OWNER = 4;
 const GWL_EXSTYLE = -20;
 const WS_EX_TOOLWINDOW = 0x80;
-const SW_MINIMIZE = 6, SW_RESTORE = 9;
+const SW_MAXIMIZE = 3, SW_MINIMIZE = 6, SW_RESTORE = 9;
 const SWP_NOSIZE = 0x1, SWP_NOMOVE = 0x2, SWP_NOZORDER = 0x4, SWP_NOACTIVATE = 0x10, SWP_SHOWWINDOW = 0x40;
 const HWND_TOP = 0;
 const WM_CLOSE = 0x10;
@@ -446,7 +447,16 @@ module.exports = {
     return { pid: pi.readUInt32LE(16) };
   },
 
+  /** Physical screen rect plus maximized/minimized state (a minimized window's rect is meaningless). */
+  placement(hwnd) {
+    const b = Buffer.alloc(16);
+    if (!GetWindowRect(hwnd, b)) return null;
+    const l = b.readInt32LE(0), t = b.readInt32LE(4), r = b.readInt32LE(8), bo = b.readInt32LE(12);
+    return { x: l, y: t, width: r - l, height: bo - t, maximized: !!IsZoomed(hwnd), minimized: !!IsIconic(hwnd) };
+  },
+
   minimize(hwnd) { ShowWindow(hwnd, SW_MINIMIZE); },
+  maximize(hwnd) { ShowWindow(hwnd, SW_MAXIMIZE); },
   restore(hwnd) { ShowWindow(hwnd, SW_RESTORE); },
   isMinimized(hwnd) { return !!IsIconic(hwnd); },
 

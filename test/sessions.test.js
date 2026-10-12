@@ -6,8 +6,8 @@ const assert = require('node:assert/strict');
 const { SessionManager, withSessionName } = require('../src/main/sessions');
 
 /** In-memory backend/terminal/store/screen so the core can be tested on any OS. */
-function harness({ windows = [], parents = new Map(), foreground = null, ownWindows = [] } = {}) {
-  const state = { windows, parents, foreground, launched: [], bounds: [], focused: [] };
+function harness({ windows = [], parents = new Map(), foreground = null, ownWindows = [], persisted = {} } = {}) {
+  const state = { windows, parents, foreground, launched: [], bounds: [], focused: [], placements: new Map(), placed: [], maximized: [], minimized: [] };
   const backend = {
     name: 'fake',
     capabilities: { list: true, focus: true, move: true },
@@ -20,13 +20,19 @@ function harness({ windows = [], parents = new Map(), foreground = null, ownWind
     focus: (id) => state.focused.push(id),
     setBounds: (id, r) => state.bounds.push({ id, ...r }),
     isMinimized: () => false,
-    minimize() {}, restore() {}, close() {},
+    placement: (id) => state.placements.get(id) || null,
+    setBoundsPhysical: (id, r) => state.placed.push({ id, ...r }),
+    maximize: (id) => state.maximized.push(id),
+    minimize: (id) => state.minimized.push(id),
+    restore() {}, close() {},
   };
   const terminal = { name: 'fake', launch: (req) => { const pid = 5000 + state.launched.length; state.launched.push({ ...req, pid }); return { pid }; } };
-  const saved = { sessions: [], names: {} };
+  const saved = { sessions: persisted.sessions || [], names: {}, closed: persisted.closed || [] };
   const store = {
     loadSessions: () => saved.sessions, saveSessions: (l) => { saved.sessions = l; }, loadState: () => ({}), saveState() {},
     loadNames: () => saved.names, saveNames: (n) => { saved.names = JSON.parse(JSON.stringify(n)); },
+    sessionsSavedAt: () => persisted.savedAt || null,
+    loadClosed: () => JSON.parse(JSON.stringify(saved.closed)), saveClosed: (l) => { saved.closed = JSON.parse(JSON.stringify(l)); },
   };
   const screen = {
     getPrimaryDisplay: () => ({ id: 1, workArea: { x: 0, y: 0, width: 1000, height: 600 }, bounds: { x: 0, y: 0, width: 1000, height: 600 } }),
@@ -389,4 +395,99 @@ test('"+ New" preselects the profile of the active terminal, also once focus has
   assert.equal(mgr.activeProfile(), 'Claude personal');
   state.foreground = 999; mgr.poll(); // the docked strip never takes focus — another app may still be in front
   assert.equal(mgr.activeProfile(), 'Claude personal');
+});
+
+/** Take a window off screen and let the manager notice (fake pids may happen to be alive here). */
+function closeWindows(mgr, state, ids) {
+  state.windows = state.windows.filter((w) => !ids.includes(w.id));
+  mgr.poll();
+  for (const x of mgr.sessions.values()) if (x.hwnd == null) x.pendingSince = 0; // as if the pid had died
+  mgr.poll();
+}
+
+test('a closed window reopens in its folder, resumes its conversation and goes back to its place', () => {
+  const { mgr, state, saved } = harness();
+  const s = mgr.launch({ profileName: 'Claude personal', label: 'work', cwd: __dirname });
+  state.windows.push({ id: 77, pid: 5000, title: '✳ Claude' });
+  state.placements.set(77, { x: 100, y: 50, width: 800, height: 600, maximized: false, minimized: false });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', satchelId: s.id, sessionId: 'abc', source: 'startup' });
+  mgr.applyHookEvent({ event: 'UserPromptSubmit', sessionId: 'abc' });
+  // maximized later, then minimized: the normal rect and "maximized" survive both
+  state.placements.set(77, { x: -8, y: -8, width: 1936, height: 1048, maximized: true, minimized: false });
+  mgr._tick = 0; mgr.poll();
+  state.placements.set(77, { x: -32000, y: -32000, width: 160, height: 28, maximized: false, minimized: true });
+  mgr._tick = 0; mgr.poll();
+  closeWindows(mgr, state, [77]);
+  assert.deepEqual(mgr.closedList().map((e) => [e.count, e.names]), [[1, ['work']]]);
+  assert.equal(saved.closed.length, 1, 'the stack is persisted');
+
+  const r = mgr.reopenClosed();
+  assert.deepEqual(r.errors, []);
+  const again = state.launched[1];
+  assert.equal(again.command, "claude --resume 'abc'");
+  assert.equal(again.cwd, __dirname);
+  assert.equal(again.env.CLAUDE_CONFIG_DIR, 'C:/Users/me/.claude');
+  assert.equal(mgr.closedList().length, 0);
+  const back = mgr.snapshot().find((x) => x.id === r.opened[0].id);
+  assert.equal(back.label, 'work');
+  assert.equal(back.claudeSessionId, 'abc');
+
+  state.windows.push({ id: 78, pid: 5001, title: '✳ Claude' });
+  mgr.poll();
+  assert.deepEqual(state.placed, [{ id: 78, x: 100, y: 50, width: 800, height: 600 }]);
+  assert.deepEqual(state.maximized, [78]);
+  assert.deepEqual(state.minimized, [78]);
+  assert.throws(() => mgr.reopenClosed(), /Nothing to reopen/);
+});
+
+test('windows closing together are one entry; exited Claude reopens as a shell, adopted shells via the shell profile', () => {
+  const { mgr, state, config } = harness({ windows: [{ id: 10, pid: 100, title: 'MINGW64:/c/work' }] });
+  config.profiles.push({ name: 'Shell', group: 'Other', cwd: '.', command: '' });
+  mgr.launch({ profileName: 'Claude company', label: 'after claude' });
+  state.windows.push({ id: 20, pid: 5000, title: 'MINGW64:/p' }); // Claude has exited, the shell lives on
+  mgr.poll();
+  closeWindows(mgr, state, [10]);
+  mgr.closed[mgr.closed.length - 1].at -= 60000; // a minute later...
+  closeWindows(mgr, state, [20]);
+  assert.deepEqual(mgr.closedList().map((e) => e.count), [1, 1]);
+  // ...but a burst (a PC restart) is one entry
+  mgr.reopenClosed();
+  mgr.reopenClosed();
+  state.windows.push({ id: 21, pid: 5001, title: 'x' }, { id: 22, pid: 5002, title: 'y' });
+  mgr.poll();
+  closeWindows(mgr, state, [21, 22]);
+  assert.deepEqual(mgr.closedList().map((e) => e.count), [2]);
+  const [company, shell] = [state.launched[1], state.launched[2]]; // newest entry first
+  assert.equal(company.command, ''); // same account, plain shell
+  assert.equal(company.env.CLAUDE_CONFIG_DIR, 'C:/Users/me/.claude-co');
+  assert.equal(company.env.SATCHEL_PROFILE, 'Claude company');
+  assert.equal(shell.command, '');
+  assert.equal(shell.env.SATCHEL_PROFILE, 'Shell');
+});
+
+test('after a restart the previous session is one reopen entry, joined with what closed during shutdown', () => {
+  const savedAt = Date.now() - 3600000;
+  const dead = (id, extra) => ({ id, pid: 4194000 + id.length, hwnd: 1000 + id.length, exe: 'mintty.exe', profile: 'Claude personal', group: 'Personal', cwd: __dirname, createdAt: 1, launched: true, ...extra });
+  const { mgr } = harness({
+    persisted: {
+      savedAt,
+      sessions: [
+        dead('a', { claudeSessionId: 'conv-a', hadPrompt: true, label: 'A' }),
+        dead('bb', { label: 'B' }),
+        // a recycled pid: alive, but not a terminal any more
+        { ...dead('ccc', { label: 'C' }), pid: process.pid },
+        // a launch that never got a window is not a window to bring back
+        { id: 'dddd', pid: 4194999, hwnd: null, profile: 'Claude personal', createdAt: 1, launched: true },
+      ],
+      closed: [
+        { at: savedAt - 7200000, windows: [{ name: 'old', profile: 'Claude personal', label: 'old' }] },
+        { at: savedAt - 3000, windows: [{ name: 'D', profile: 'Claude personal', label: 'D' }] }, // seen closing at shutdown
+      ],
+    },
+  });
+  assert.deepEqual(mgr.snapshot(), []);
+  const list = mgr.closedList();
+  assert.deepEqual(list.map((e) => e.count), [4, 1]);
+  assert.deepEqual([...list[0].names].sort(), ['A', 'B', 'C', 'D']);
 });

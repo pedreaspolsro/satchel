@@ -64,6 +64,7 @@ function defaults() {
     pollIntervalMs: 1000,
     alwaysOnTop: true,
     hotkey: 'CommandOrControl+Alt+S',
+    reopenHotkey: 'CommandOrControl+Alt+T', // reopen the most recently closed window(s) — after a PC restart: the whole last session
     notifications: true,
     closeToTray: true,      // closing the panel hides it to the tray; quit via the tray menu or --quit
     startMinimized: false,  // start hidden in the tray (for autostart)

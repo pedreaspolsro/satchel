@@ -68,6 +68,7 @@ app.whenReady().then(() => {
     updateTray(list);
   });
   manager.on('attention', notifyAttention);
+  manager.on('closed', () => refreshTrayMenu());
   manager.start();
   control = startControlServer(manager, config.CONTROL_SOCKET); // lets the CLI talk to this instance
   registerHotkey();
@@ -422,10 +423,34 @@ function setDock(edge, displayId) {
 }
 
 function registerHotkey() {
-  if (!cfg.hotkey) return;
-  try {
-    if (!globalShortcut.register(cfg.hotkey, toggleWindow)) console.warn(`[satchel] hotkey ${cfg.hotkey} is taken`);
-  } catch (e) { console.warn('[satchel] hotkey:', e.message); }
+  const reg = (key, fn) => {
+    if (!key) return;
+    try {
+      if (!globalShortcut.register(key, fn)) console.warn(`[satchel] hotkey ${key} is taken`);
+    } catch (e) { console.warn('[satchel] hotkey:', e.message); }
+  };
+  reg(cfg.hotkey, toggleWindow);
+  // Global, because the docked strip never has keyboard focus (Ctrl+Shift+T belongs to browsers).
+  reg(cfg.reopenHotkey, () => reopenClosed());
+}
+
+/** Reopen the most recent closed entry (or the one at `index`), like a browser's Ctrl+Shift+T. */
+function reopenClosed(index) {
+  if (!manager.closed.length) { console.log('[satchel] nothing to reopen'); return { opened: [], errors: [] }; }
+  const r = manager.reopenClosed(index);
+  console.log(`[satchel] reopened ${r.opened.length} window(s)${r.errors.length ? `; failed: ${r.errors.join('; ')}` : ''}`);
+  if (r.errors.length && Notification.isSupported()) new Notification({ title: 'Satchel could not reopen everything', body: r.errors.join('\n') }).show();
+  return r;
+}
+
+// Start with Windows (login item). A dev checkout runs electron.exe, which needs the app folder.
+const loginItemOpts = () => (app.isPackaged ? {} : { path: process.execPath, args: [path.resolve(__dirname, '..', '..')] });
+function startsAtLogin() {
+  try { return app.getLoginItemSettings(loginItemOpts()).openAtLogin; } catch { return false; }
+}
+function setStartAtLogin(on) {
+  app.setLoginItemSettings({ openAtLogin: !!on, ...loginItemOpts() });
+  refreshTrayMenu();
 }
 
 function notifyAttention(s) {
@@ -457,14 +482,36 @@ function createTray() {
   refreshTrayMenu();
 }
 
+/** "Satchel" / "3 windows: Satchel, doctor, new dispo" — plus when, for older entries. */
+function closedLabel(e, withTime) {
+  const cut = (t) => (t.length > 40 ? `${t.slice(0, 39)}…` : t);
+  const what = e.count === 1 ? cut(e.names[0]) : `${e.count} windows: ${e.names.slice(0, 3).map(cut).join(', ')}${e.count > 3 ? ', …' : ''}`;
+  if (!withTime) return what;
+  const d = new Date(e.at);
+  const hm = d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  const day = d.toDateString() === new Date().toDateString() ? '' : `${d.toLocaleDateString([], { weekday: 'short', day: 'numeric', month: 'short' })} `;
+  return `${what}  ·  ${day}${hm}`;
+}
+
 function refreshTrayMenu() {
   if (!tray) return;
   const safe = (fn) => () => { try { fn(); } catch (e) { console.error('[satchel]', e.message); } };
   const dock = dockState();
   const profiles = (cfg.profiles || []).map((p) => ({ label: p.name, click: safe(() => manager.launch({ profileName: p.name })) }));
+  const closed = manager.closedList();
+  const top = closed[0];
   tray.setContextMenu(Menu.buildFromTemplate([
     { label: 'Show Satchel', click: showWindow },
     { label: 'New session', submenu: profiles.length ? profiles : [{ label: '(no profiles configured)', enabled: false }] },
+    {
+      label: top ? `Reopen ${top.count === 1 ? `"${closedLabel(top)}"` : `${top.count} windows`}` : 'Reopen closed window',
+      enabled: !!top, accelerator: cfg.reopenHotkey || undefined, registerAccelerator: false, click: safe(() => reopenClosed()),
+    },
+    {
+      label: 'Recently closed',
+      enabled: closed.length > 0,
+      submenu: closed.length ? closed.slice(0, 15).map((e) => ({ label: closedLabel(e, true), click: safe(() => reopenClosed(e.index)) })) : [{ label: '(none)', enabled: false }],
+    },
     { type: 'separator' },
     {
       label: 'Dock',
@@ -477,6 +524,7 @@ function refreshTrayMenu() {
     { label: 'Tile all windows', click: safe(() => manager.tile('All')) },
     { label: 'Minimize all windows', click: safe(() => manager.minimizeGroup('All')) },
     { type: 'separator' },
+    ...(process.platform === 'linux' ? [] : [{ label: `Start with ${process.platform === 'darwin' ? 'macOS' : 'Windows'}`, type: 'checkbox', checked: startsAtLogin(), click: (item) => { try { setStartAtLogin(item.checked); } catch (e) { console.error('[satchel]', e.message); } } }]),
     { label: 'Quit Satchel', click: quitApp },
   ]));
 }
@@ -518,6 +566,7 @@ function registerIpc() {
   h('sessions:launch', (req) => manager.launch(req));
   h('sessions:resumeCandidates', () => manager.resumeCandidates());
   h('sessions:activeProfile', () => manager.activeProfile());
+  h('sessions:reopenClosed', () => reopenClosed());
   h('ui:newSession', () => openNewSession());
   h('ui:newSessionDone', () => closeNewSession());
   h('sessions:focus', (id) => manager.focus(id));

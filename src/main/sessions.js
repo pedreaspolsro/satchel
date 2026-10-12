@@ -14,8 +14,13 @@ const { isAlive, expandHome, statusFromTitle, cleanTitle, gridLayout, cascadeLay
 const { EVENTS_FILE } = require('./config');
 
 const PENDING_TIMEOUT_MS = 20000;
-const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'sessionTitle', 'hadPrompt'];
+const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'exe', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'sessionTitle', 'hadPrompt', 'placement'];
 const MAX_NAMES = 300; // remembered Claude sessions (label/group/title keyed by Claude session id)
+const MAX_CLOSED = 25; // entries on the "reopen closed" stack
+// Windows closing within this long of each other are one entry: at a PC restart they all go at once.
+const CLOSE_BURST_MS = 4000;
+// At startup, the windows a restart took away join what Satchel saw close during that shutdown.
+const SHUTDOWN_MS = 60000;
 
 /** Compare directories loosely (slashes, trailing separators, case on Windows). */
 function sameDir(a, b) {
@@ -67,6 +72,7 @@ class SessionManager extends EventEmitter {
     this.exeCache = new Map();   // pid -> lowercase exe basename
     this.ignored = new Set();    // "pid:hwnd" the user asked us to forget
     this.names = typeof store.loadNames === 'function' ? (store.loadNames() || {}) : {}; // claudeSessionId -> { label, group, groupLocked, sessionTitle, updatedAt }
+    this.closed = typeof store.loadClosed === 'function' ? (store.loadClosed() || []) : []; // [{ at, windows: [record] }], newest last
     this.fg = null;              // foreground hwnd as of the last poll
     this.slow = false;           // hidden in the tray -> poll 5x slower
     this._tick = 0;
@@ -86,15 +92,33 @@ class SessionManager extends EventEmitter {
       id: null, label: '', profile: null, group: this.config.defaultGroup, cwd: null, createdAt: now,
       launched: false, pid: null, hwnd: null, exe: null, title: '', status: 'unknown', statusSince: now,
       attention: false, note: null, lastFocusedAt: 0, minimized: false, pending: false, pendingSince: 0,
-      claudeSessionId: null, groupLocked: false, sessionTitle: null, hadPrompt: false, ...over,
+      claudeSessionId: null, groupLocked: false, sessionTitle: null, hadPrompt: false,
+      hadWindow: false, placement: null, restorePlacement: null, ...over,
     };
   }
 
   _restore() {
+    const gone = [];
     for (const s of this.store.loadSessions()) {
-      if (!s.id || !s.pid || !isAlive(s.pid)) continue;
-      this.sessions.set(s.id, this._blank({ ...s, hwnd: s.hwnd ?? null, pending: true, pendingSince: Date.now() }));
+      if (!s.id || !s.pid) continue;
+      const hadWindow = s.hwnd != null;
+      if (this._stillOurs(s)) this.sessions.set(s.id, this._blank({ ...s, hwnd: s.hwnd ?? null, hadWindow, pending: true, pendingSince: Date.now() }));
+      else if (hadWindow) gone.push(this._blank({ ...s, hadWindow }));
     }
+    // Windows that were open when Satchel last ran and are gone now — a PC restart, typically. They
+    // become one reopen entry, joined with any that Satchel itself saw close during that shutdown.
+    if (gone.length) {
+      const savedAt = typeof this.store.sessionsSavedAt === 'function' ? this.store.sessionsSavedAt() : null;
+      this._rememberClosed(gone, savedAt || Date.now(), SHUTDOWN_MS);
+    }
+  }
+
+  /** Is a persisted session's process still the terminal we tracked? (Pids get reused after a reboot.) */
+  _stillOurs(s) {
+    if (!isAlive(s.pid)) return false;
+    if (!s.exe) return true; // persisted before the exe was recorded
+    const img = this.backend.processImage(s.pid);
+    return !!img && path.basename(img).toLowerCase() === s.exe;
   }
 
   start() {
@@ -174,12 +198,20 @@ class SessionManager extends EventEmitter {
       else { s.hwnd = null; s.pending = true; s.pendingSince = now; }
     }
     // 2) pending sessions (just launched, or restored from disk): match by pid
+    const gone = [];
     for (const s of this.sessions.values()) {
       if (s.hwnd != null) continue;
       const w = windows.find((x) => x.pid === s.pid && !claimed.has(x.id));
-      if (w) { s.hwnd = w.id; claimed.add(w.id); this._sync(s, w, now, fg, true); }
-      else if (!isAlive(s.pid) || now - s.pendingSince > PENDING_TIMEOUT_MS) this.sessions.delete(s.id);
+      if (w) {
+        s.hwnd = w.id; claimed.add(w.id); this._sync(s, w, now, fg, true);
+        if (s.restorePlacement) { this._applyPlacement(w.id, s.restorePlacement); s.restorePlacement = null; }
+      } else if (!isAlive(s.pid) || now - s.pendingSince > PENDING_TIMEOUT_MS) {
+        this.sessions.delete(s.id);
+        if (s.hadWindow) gone.push(s); // its window was closed (not a launch that never showed up)
+      }
     }
+    if (gone.length) this._rememberClosed(gone, now);
+    for (const s of this.sessions.values()) if (s.hwnd != null) this._capturePlacement(s);
     // 3) adopt windows nobody owns
     if (this.config.adoptForeign !== false) {
       for (const w of windows) {
@@ -192,6 +224,7 @@ class SessionManager extends EventEmitter {
 
   _sync(s, w, now, fg, first = false) {
     s.pending = false;
+    s.hadWindow = true;
     s.title = w.title;
     s.pid = w.pid;
     s.exe = w.exe;
@@ -219,7 +252,7 @@ class SessionManager extends EventEmitter {
 
   _adopt(w, now) {
     const s = this._blank({
-      id: crypto.randomUUID(), pid: w.pid, hwnd: w.id, exe: w.exe, title: w.title, createdAt: now,
+      id: crypto.randomUUID(), pid: w.pid, hwnd: w.id, exe: w.exe, title: w.title, createdAt: now, hadWindow: true,
       status: statusFromTitle(w.title, this.config.statusGlyphs), statusSince: now,
     });
     this.sessions.set(s.id, s);
@@ -242,19 +275,134 @@ class SessionManager extends EventEmitter {
     }
     const dir = expandHome(cwd || (target && target.cwd) || p.cwd || '~');
     if (!fs.existsSync(dir)) throw new Error(`Folder does not exist: ${dir}`);
+    const s = this._spawn(p, dir, label, command, {
+      // Pre-seed identity from the remembered session so grouping/naming apply immediately.
+      claudeSessionId: target ? target.sessionId : null, sessionTitle: target ? target.sessionTitle || null : null,
+    });
+    if (target) this._applyRemembered(s, target.sessionId);
+    this._changed(true);
+    return this._view(s);
+  }
+
+  /** Start a terminal for profile `p` and track it as a pending session; `seed` pre-fills fields. */
+  _spawn(p, dir, label, command, seed = {}) {
     const id = crypto.randomUUID();
     const env = { ...(p.env || {}), SATCHEL_ID: id, SATCHEL_PROFILE: p.name, SATCHEL_EVENTS: EVENTS_FILE };
     const { pid } = this.terminal.launch({ cwd: dir, env, title: label || p.name, command, shell: p.shell });
     const s = this._blank({
       id, label: (label || '').trim(), profile: p.name, group: p.group || this.config.defaultGroup, cwd: dir,
-      launched: true, pid, pending: true, pendingSince: Date.now(),
-      // Pre-seed identity from the remembered session so grouping/naming apply immediately.
-      claudeSessionId: target ? target.sessionId : null, sessionTitle: target ? target.sessionTitle || null : null,
+      launched: true, pid, pending: true, pendingSince: Date.now(), ...seed,
     });
-    if (target) this._applyRemembered(s, target.sessionId);
     this.sessions.set(id, s);
+    return s;
+  }
+
+  // ---- reopen closed windows (like a browser's "reopen closed tab") -----------------------
+
+  /** What reopening a closed window needs: where, under which account, which conversation. */
+  _closedRecord(s) {
+    return {
+      name: s.label || s.sessionTitle || cleanTitle(s.title, this.config.statusGlyphs) || s.profile || 'shell',
+      profile: s.profile, cwd: s.cwd, label: s.label || '', group: s.group, groupLocked: !!s.groupLocked,
+      // A conversation with content resumes; Claude running without one starts fresh; else a shell.
+      resumeId: s.claudeSessionId && (s.hadPrompt || s.sessionTitle) ? s.claudeSessionId : null,
+      claude: !!s.claudeSessionId || s.status !== 'unknown',
+      sessionTitle: s.sessionTitle || null,
+      placement: s.placement || null,
+    };
+  }
+
+  /**
+   * Push closed windows onto the reopen stack. Windows closing in one burst (a PC restart closes
+   * them all within seconds) share an entry, so one reopen brings the whole set back.
+   */
+  _rememberClosed(list, at, burstMs = CLOSE_BURST_MS) {
+    const windows = list.map((s) => this._closedRecord(s));
+    const top = this.closed[this.closed.length - 1];
+    if (top && Math.abs(at - top.at) < burstMs) { top.windows.push(...windows); top.at = Math.max(top.at, at); }
+    else this.closed.push({ at, windows });
+    if (this.closed.length > MAX_CLOSED) this.closed.splice(0, this.closed.length - MAX_CLOSED);
+    this._saveClosed();
+  }
+
+  _saveClosed() {
+    if (typeof this.store.saveClosed === 'function') {
+      try { this.store.saveClosed(this.closed); } catch (e) { this.emit('error', e); }
+    }
+    this.emit('closed', this.closedList());
+  }
+
+  /** The reopen stack for menus, newest first; `index` is what reopenClosed() takes. */
+  closedList() {
+    return this.closed.map((e, index) => ({ index, at: e.at, count: e.windows.length, names: e.windows.map((w) => w.name) })).reverse();
+  }
+
+  /**
+   * Reopen a closed entry (default: the most recent): each window comes back in its folder, under
+   * its account, resuming its Claude conversation, and goes back to its old place on screen.
+   */
+  reopenClosed(index = this.closed.length - 1) {
+    const entry = this.closed[index];
+    if (!entry) throw new Error('Nothing to reopen');
+    this.closed.splice(index, 1);
+    const opened = [];
+    const errors = [];
+    for (const rec of entry.windows) {
+      try { const s = this._reopen(rec); if (s) opened.push(s); } catch (e) { errors.push(`${rec.name}: ${e.message}`); }
+    }
+    this._saveClosed();
     this._changed(true);
-    return this._view(s);
+    return { opened: opened.map((s) => this._view(s)), errors };
+  }
+
+  _reopen(rec) {
+    const profiles = this.config.profiles || [];
+    // Windows adopted without a known account were plain shells: a profile without a command fits.
+    const p = profiles.find((x) => x.name === rec.profile) || (!rec.profile && profiles.find((x) => !x.command));
+    if (!p) throw new Error(rec.profile ? `profile "${rec.profile}" no longer exists` : 'no shell profile (one without a command) to reopen it with');
+    // Already back (resumed by hand meanwhile): a second window would attach the conversation twice.
+    if (rec.resumeId && [...this.sessions.values()].some((s) => s.claudeSessionId === rec.resumeId)) return null;
+    let command = p.command || '';
+    if (rec.resumeId) command = withResume(command, rec.resumeId);
+    else if (/^claude(\s|$)/.test(command) && !rec.claude) command = ''; // Claude had exited there: same account, plain shell
+    else if (this.config.nameClaudeSession !== false) command = withSessionName(command, rec.label);
+    const want = rec.cwd ? expandHome(rec.cwd) : null;
+    const dir = want && fs.existsSync(want) ? want : expandHome(p.cwd || '~');
+    const s = this._spawn(p, dir, rec.label, command, {
+      group: rec.group || p.group || this.config.defaultGroup, groupLocked: !!rec.groupLocked,
+      claudeSessionId: rec.resumeId, sessionTitle: rec.resumeId ? rec.sessionTitle : null, hadPrompt: !!rec.resumeId,
+      restorePlacement: rec.placement,
+    });
+    if (rec.resumeId) this._applyRemembered(s, rec.resumeId);
+    return s;
+  }
+
+  /** Remember where a window sits (normal rect, maximized and on which monitor, minimized). */
+  _capturePlacement(s) {
+    if (typeof this.backend.placement !== 'function') return;
+    let p = null;
+    try { p = this.backend.placement(s.hwnd); } catch { return; }
+    if (!p) return;
+    const prev = s.placement || {};
+    if (p.minimized) s.placement = { ...prev, minimized: true }; // a minimized window's rect is meaningless
+    else if (p.maximized) s.placement = { rect: prev.rect || null, maxAt: { x: Math.round(p.x + p.width / 2), y: Math.round(p.y + p.height / 2) }, maximized: true, minimized: false };
+    else s.placement = { rect: { x: p.x, y: p.y, width: p.width, height: p.height }, maximized: false, minimized: false };
+  }
+
+  /** Put a reopened window back where it was — skipping positions on a monitor that is gone. */
+  _applyPlacement(hwnd, pl) {
+    const b = this.backend;
+    if (!pl || typeof b.setBoundsPhysical !== 'function') return;
+    try {
+      const mons = typeof b.monitors === 'function' ? b.monitors() : null;
+      const onScreen = (x, y) => !mons || mons.some((m) => x >= m.x && x < m.x + m.width && y >= m.y && y < m.y + m.height);
+      const r = pl.rect;
+      if (r && onScreen(r.x + r.width / 2, r.y + r.height / 2)) b.setBoundsPhysical(hwnd, r);
+      // Maximized all along (no normal rect known): move it onto its monitor first, then maximize.
+      else if (pl.maximized && pl.maxAt && onScreen(pl.maxAt.x, pl.maxAt.y)) b.setBoundsPhysical(hwnd, { x: pl.maxAt.x - 300, y: pl.maxAt.y - 200, width: 600, height: 400 });
+      if (pl.maximized && typeof b.maximize === 'function') b.maximize(hwnd);
+      if (pl.minimized) b.minimize(hwnd);
+    } catch (e) { this.emit('error', e); }
   }
 
   /**

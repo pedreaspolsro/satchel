@@ -294,6 +294,8 @@
     document.addEventListener('keydown', (e) => {
       if (state.editingId) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'n') { e.preventDefault(); newSession(); return; }
+      // Like a browser's "reopen closed tab" (works while the panel has focus; Ctrl+Alt+T works anywhere).
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 't') { e.preventDefault(); api.reopenClosed().catch(showErr); return; }
       if ((e.ctrlKey || e.metaKey) && /^[1-9]$/.test(e.key)) {
         const s = visible()[Number(e.key) - 1];
         if (s) { e.preventDefault(); api.focus(s.id).catch(showErr); }
