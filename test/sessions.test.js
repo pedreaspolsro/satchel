@@ -218,10 +218,46 @@ test('resume refuses a session that is already open in a window', () => {
   });
   mgr.poll();
   mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'abc' });
+  mgr.applyHookEvent({ event: 'UserPromptSubmit', sessionId: 'abc' }); // content -> worth remembering
   mgr.rename(mgr.snapshot()[0].id, 'My Task'); // persists names.abc with the label
   assert.throws(() => mgr.launch({ profileName: 'Claude personal', label: 'my task', resume: true }), /already open/);
   // candidates list also hides the live one
   assert.deepEqual(mgr.resumeCandidates(), []);
+});
+
+test('prompt-less fresh sessions are not remembered; titled records win resume ties', () => {
+  const { mgr, saved } = harness({
+    windows: [{ id: 10, pid: 100, title: 'MINGW64:/p' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  const row = mgr.snapshot()[0].id;
+  mgr.rename(row, 'new dispo');
+  // A `claude` that starts and dies without a single prompt never writes a transcript — its id
+  // must not be remembered, or resume-by-name later resolves to an unresumable ghost.
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'ghost', source: 'startup' });
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'ghost', reason: 'prompt_input_exit' });
+  assert.ok(!('ghost' in saved.names), 'ghost session must not be remembered');
+  // The real conversation in the same row gets remembered once something is said.
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'real', source: 'startup' });
+  mgr.applyHookEvent({ event: 'UserPromptSubmit', sessionId: 'real', sessionTitle: 'new dispo' });
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'real', reason: 'prompt_input_exit' });
+  assert.equal(saved.names.real.label, 'new dispo');
+  // A resumed session counts as content even before the next prompt.
+  mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'resumed', source: 'resume' });
+  assert.ok('resumed' in saved.names);
+  // While that same-name session is OPEN, resume-by-name refuses rather than resurrecting an
+  // older conversation with the same name (a /clear leaves those behind).
+  assert.throws(() => mgr._resumeTarget('new dispo'), /already open/);
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'resumed', reason: 'prompt_input_exit' });
+  // Tiebreak: an untitled leftover record must lose to the titled real one, even when newer.
+  mgr.names.leftover = { label: 'new dispo', group: 'Company', groupLocked: false, sessionTitle: null, cwd: null, updatedAt: Date.now() + 9999 };
+  assert.equal(mgr._resumeTarget('new dispo').sessionId, 'real');
+  // Suggestions collapse to one entry per name — the same record the resolver would pick.
+  const dispo = mgr.resumeCandidates().filter((c) => c.name === 'new dispo');
+  assert.equal(dispo.length, 1);
+  assert.equal(dispo[0].sessionId, 'real');
 });
 
 test('resume keeps profile flags, respects an already-resuming profile, rejects non-claude commands', () => {

@@ -14,7 +14,7 @@ const { isAlive, expandHome, statusFromTitle, cleanTitle, gridLayout, cascadeLay
 const { EVENTS_FILE } = require('./config');
 
 const PENDING_TIMEOUT_MS = 20000;
-const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'sessionTitle'];
+const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'sessionTitle', 'hadPrompt'];
 const MAX_NAMES = 300; // remembered Claude sessions (label/group/title keyed by Claude session id)
 
 /** Compare directories loosely (slashes, trailing separators, case on Windows). */
@@ -86,7 +86,7 @@ class SessionManager extends EventEmitter {
       id: null, label: '', profile: null, group: this.config.defaultGroup, cwd: null, createdAt: now,
       launched: false, pid: null, hwnd: null, exe: null, title: '', status: 'unknown', statusSince: now,
       attention: false, note: null, lastFocusedAt: 0, minimized: false, pending: false, pendingSince: 0,
-      claudeSessionId: null, groupLocked: false, sessionTitle: null, ...over,
+      claudeSessionId: null, groupLocked: false, sessionTitle: null, hadPrompt: false, ...over,
     };
   }
 
@@ -259,8 +259,9 @@ class SessionManager extends EventEmitter {
 
   /**
    * Resolve "resume by name" against the remembered sessions (label first, then Claude's own
-   * session title; newest wins). A name that only matches sessions already open in a window is an
-   * error — resuming those would attach the same conversation twice.
+   * session title; titled records beat untitled ones, then newest wins). A name that matches a
+   * session already open in a window is an error: attaching it twice would be wrong, and quietly
+   * resuming an older same-name conversation instead (e.g. the one a /clear left behind) is worse.
    */
   _resumeTarget(label) {
     const name = String(label || '').trim().toLowerCase();
@@ -273,25 +274,38 @@ class SessionManager extends EventEmitter {
         : (r.sessionTitle || '').trim().toLowerCase() === name ? 1 : 0;
       if (!rank) continue;
       if (live.has(sessionId)) { liveHit = r; continue; }
-      if (!best || rank > best.rank || (rank === best.rank && (r.updatedAt || 0) > (best.updatedAt || 0))) {
-        best = { sessionId, rank, ...r };
-      }
+      // Same rank: a record with a session title definitely holds a real conversation (Claude only
+      // titles sessions with content) — prefer it over an untitled one, then take the newest.
+      const better = !best
+        || rank > best.rank
+        || (rank === best.rank && !!r.sessionTitle !== !!best.sessionTitle && !!r.sessionTitle)
+        || (rank === best.rank && !!r.sessionTitle === !!best.sessionTitle && (r.updatedAt || 0) > (best.updatedAt || 0));
+      if (better) best = { sessionId, rank, ...r };
     }
-    if (!best && liveHit) throw new Error(`"${(liveHit.label || liveHit.sessionTitle || '').trim()}" is already open — focus that window instead`);
+    if (liveHit) throw new Error(`"${(liveHit.label || liveHit.sessionTitle || '').trim()}" is already open — focus that window instead`);
     return best;
   }
 
   /** Closed-but-remembered Claude sessions, newest first — the "Resume" suggestions in the dialog. */
   resumeCandidates() {
     const live = new Set([...this.sessions.values()].map((s) => s.claudeSessionId).filter(Boolean));
-    return Object.entries(this.names)
+    const all = Object.entries(this.names)
       .filter(([id, r]) => !live.has(id) && ((r.label || '').trim() || (r.sessionTitle || '').trim()))
       .map(([sessionId, r]) => ({
         sessionId, name: (r.label || '').trim() || (r.sessionTitle || '').trim(),
-        group: r.group || null, cwd: r.cwd || null, updatedAt: r.updatedAt || 0,
-      }))
+        titled: !!r.sessionTitle, group: r.group || null, cwd: r.cwd || null, updatedAt: r.updatedAt || 0,
+      }));
+    // One suggestion per name, keeping the record _resumeTarget would pick (titled first, newest).
+    const byName = new Map();
+    for (const c of all) {
+      const k = c.name.toLowerCase();
+      const cur = byName.get(k);
+      if (!cur || (c.titled !== cur.titled ? c.titled : c.updatedAt > cur.updatedAt)) byName.set(k, c);
+    }
+    return [...byName.values()]
       .sort((a, b) => b.updatedAt - a.updatedAt)
-      .slice(0, 50);
+      .slice(0, 50)
+      .map(({ titled, ...c }) => c);
   }
 
   get(id) { return this.sessions.get(id) || null; }
@@ -456,6 +470,9 @@ class SessionManager extends EventEmitter {
       // Another Claude session took over this window (`/clear`, a fresh `claude`, `--resume` of a
       // different conversation): drop the previous conversation's automatic name.
       s.sessionTitle = null;
+      // A resumed/forked/compacted conversation has content; a fresh one has nothing yet — Claude
+      // only writes a transcript once something is said, so its id is not resumable until then.
+      s.hadPrompt = ['resume', 'fork', 'compact'].includes(ev.source);
       // The conversation now lives here — no other window may still answer to its id.
       for (const o of this.sessions.values()) if (o !== s && o.claudeSessionId === ev.sessionId) o.claudeSessionId = null;
     }
@@ -473,8 +490,8 @@ class SessionManager extends EventEmitter {
     const onHook = (this.config.attention || {}).onHook !== false;
     const away = s.hwnd == null || s.hwnd !== fg;
     switch (ev.event) {
-      case 'UserPromptSubmit': s.attention = false; s.note = null; break;
-      case 'Stop': if (onHook && away) this._flag(s, 'Finished'); break;
+      case 'UserPromptSubmit': s.attention = false; s.note = null; s.hadPrompt = true; break;
+      case 'Stop': s.hadPrompt = true; if (onHook && away) this._flag(s, 'Finished'); break;
       case 'Notification': if (onHook && away) this._flag(s, ev.message || 'Needs your attention'); break;
       case 'SessionEnd':
         // Claude exited (or /clear'ed): the id no longer identifies this window, so a later --resume
@@ -546,6 +563,9 @@ class SessionManager extends EventEmitter {
     let changed = false;
     for (const s of this.sessions.values()) {
       if (!s.claudeSessionId) continue;
+      // A fresh session nobody has prompted yet has no transcript — remembering its id would
+      // later resolve a resume-by-name to an id Claude does not recognize.
+      if (!s.hadPrompt && !s.sessionTitle && !this.names[s.claudeSessionId]) continue;
       const prev = this.names[s.claudeSessionId];
       const rec = { label: s.label || '', group: s.group, groupLocked: !!s.groupLocked, sessionTitle: s.sessionTitle || null, cwd: s.cwd || null, updatedAt: prev ? prev.updatedAt : Date.now() };
       const same = prev && prev.label === rec.label && prev.group === rec.group && prev.groupLocked === rec.groupLocked && prev.sessionTitle === rec.sessionTitle && prev.cwd === rec.cwd;
