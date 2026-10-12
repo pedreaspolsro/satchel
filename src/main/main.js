@@ -517,6 +517,7 @@ function registerIpc() {
   h('sessions:get', () => manager.snapshot());
   h('sessions:launch', (req) => manager.launch(req));
   h('sessions:resumeCandidates', () => manager.resumeCandidates());
+  h('sessions:activeProfile', () => manager.activeProfile());
   h('ui:newSession', () => openNewSession());
   h('ui:newSessionDone', () => closeNewSession());
   h('sessions:focus', (id) => manager.focus(id));

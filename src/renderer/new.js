@@ -11,9 +11,11 @@
   const showErr = (msg) => { const e = $('#err'); e.textContent = msg; e.hidden = !msg; };
   const cleanMsg = (e) => (e && e.message ? e.message.replace(/^Error invoking remote method '[^']+': Error: /, '') : String(e));
 
+  // Each profile remembers the folder it was last launched in.
+  const lastCwd = (name) => { try { return localStorage.getItem(`lastCwd:${name}`); } catch { return null; } };
   function syncCwd() {
     const p = profiles.find((x) => x.name === $('#profile').value);
-    $('#cwd').value = p ? (p.cwd || '~') : '';
+    $('#cwd').value = p ? (lastCwd(p.name) || p.cwd || '~') : '';
   }
 
   // Resume mode: the label becomes "which session to continue" — suggest the remembered ones,
@@ -48,7 +50,10 @@
     showErr('');
     try {
       await api.launch(req);
-      try { localStorage.setItem('lastProfile', req.profileName); } catch { /* ignore */ }
+      try {
+        localStorage.setItem('lastProfile', req.profileName);
+        if (req.cwd) localStorage.setItem(`lastCwd:${req.profileName}`, req.cwd);
+      } catch { /* ignore */ }
       api.newSessionDone();
     } catch (e) {
       showErr(cleanMsg(e));
@@ -61,8 +66,10 @@
     try { cfg = await api.getConfig(); } catch (e) { showErr(cleanMsg(e)); }
     profiles = cfg.profiles || [];
     $('#profile').innerHTML = profiles.map((p) => `<option value="${p.name}">${p.name}${p.group ? ` (${p.group})` : ''}</option>`).join('');
+    // Preselect the account of the terminal the user was just in; else the one used last.
     let pre = null;
-    try { pre = localStorage.getItem('lastProfile'); } catch { /* ignore */ }
+    try { pre = await api.activeProfile(); } catch { /* ignore */ }
+    if (!pre) try { pre = localStorage.getItem('lastProfile'); } catch { /* ignore */ }
     if (pre && profiles.some((p) => p.name === pre)) $('#profile').value = pre;
     if (!profiles.length) { $('#launch').disabled = true; showErr('No profiles configured — edit config.json'); }
     syncCwd();

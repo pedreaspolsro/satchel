@@ -41,7 +41,8 @@ function finish() {
     pid: process.pid,
     ppid: process.ppid,
     // Which account this session runs under -> Satchel sorts the window into the matching group.
-    configDir: process.env.CLAUDE_CONFIG_DIR || null,
+    // Unset means Claude's default dir, so `claude` typed in a plain terminal is recognised too.
+    configDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),
   };
   try {
     fs.mkdirSync(path.dirname(file), { recursive: true });

@@ -478,10 +478,11 @@ class SessionManager extends EventEmitter {
     }
     if (ev.sessionId) s.claudeSessionId = ev.sessionId;
     if (ev.cwd) s.cwd = ev.cwd;
-    // Sort adopted windows into the group of the account they run under.
-    if (ev.configDir && !s.groupLocked) {
+    // Sort adopted windows into the group of the account they run under (the profile is tracked
+    // even when the user pinned the group: "+ New" offers the account of the active window).
+    if (ev.configDir) {
       const prof = (this.config.profiles || []).find((p) => p.env && sameDir(p.env.CLAUDE_CONFIG_DIR, ev.configDir));
-      if (prof) { s.group = prof.group || s.group; s.profile = prof.name; }
+      if (prof) { s.profile = prof.name; if (!s.groupLocked) s.group = prof.group || s.group; }
     }
     this._applyRemembered(s, ev.sessionId);
     // Claude's own session name (/rename, --name, or the generated topic) — the row's automatic name.
@@ -504,15 +505,30 @@ class SessionManager extends EventEmitter {
     return true;
   }
 
+  /** The session whose window is in the foreground, else the one focused most recently. */
+  _lastActive() {
+    let best = null;
+    for (const s of this.sessions.values()) {
+      if (s.hwnd == null) continue;
+      if (s.hwnd === this.fg) return s;
+      if (s.lastFocusedAt && (!best || s.lastFocusedAt > best.lastFocusedAt)) best = s;
+    }
+    return best;
+  }
+
   /** The session whose window is in the foreground; while Satchel itself is focused, the last one. */
   _focusedId() {
     const fg = this.fg;
     if (fg == null) return null;
-    for (const s of this.sessions.values()) if (s.hwnd != null && s.hwnd === fg) return s.id;
-    if (!this.isOwnWindow(fg)) return null;
-    let best = null;
-    for (const s of this.sessions.values()) if (s.hwnd != null && s.lastFocusedAt && (!best || s.lastFocusedAt > best.lastFocusedAt)) best = s;
-    return best ? best.id : null;
+    const s = this._lastActive();
+    if (!s) return null;
+    return s.hwnd === fg || this.isOwnWindow(fg) ? s.id : null;
+  }
+
+  /** "+ New" preselects the profile (Claude account) of the terminal the user was just working in. */
+  activeProfile() {
+    const s = this._lastActive();
+    return s && s.profile && (this.config.profiles || []).some((p) => p.name === s.profile) ? s.profile : null;
   }
 
   // ---- snapshots / persistence ----------------------------------------------------------

@@ -103,6 +103,7 @@ test('hook events match adopted windows through the process tree and auto-group 
   mgr.setGroup(s.id, 'Personal');
   mgr.applyHookEvent({ event: 'Stop', sessionId: 'abc', configDir: 'C:/Users/me/.claude-co' });
   assert.equal(mgr.snapshot()[0].group, 'Personal');
+  assert.equal(mgr.snapshot()[0].profile, 'Claude company'); // ...but the account it runs under is still tracked
   assert.equal(mgr.applyHookEvent({ event: 'Stop', ppid: 777 }), false);
 });
 
@@ -372,4 +373,20 @@ test('marks the session whose window is in the foreground; while Satchel is focu
   assert.deepEqual(mgr.snapshot().map((s) => s.focused), [false, false]);
   state.foreground = null; mgr.poll();
   assert.deepEqual(mgr.snapshot().map((s) => s.focused), [false, false]);
+});
+
+test('"+ New" preselects the profile of the active terminal, also once focus has moved on', () => {
+  const { mgr, state } = harness({ ownWindows: [500] });
+  assert.equal(mgr.activeProfile(), null); // nothing tracked yet
+  mgr.launch({ profileName: 'Claude personal' });
+  mgr.launch({ profileName: 'Claude company' });
+  state.windows.push({ id: 20, pid: 5000, title: '✳ a' }, { id: 21, pid: 5001, title: '✳ b' });
+  state.foreground = 21; mgr.poll();
+  assert.equal(mgr.activeProfile(), 'Claude company');
+  state.foreground = 20; mgr.poll();
+  assert.equal(mgr.activeProfile(), 'Claude personal');
+  state.foreground = 500; mgr.poll(); // Satchel's panel / the New dialog: the terminal we came from
+  assert.equal(mgr.activeProfile(), 'Claude personal');
+  state.foreground = 999; mgr.poll(); // the docked strip never takes focus — another app may still be in front
+  assert.equal(mgr.activeProfile(), 'Claude personal');
 });

@@ -9,6 +9,7 @@ contextBridge.exposeInMainWorld('satchel', {
   getSessions: invoke('sessions:get'),
   launch: invoke('sessions:launch'),
   resumeCandidates: invoke('sessions:resumeCandidates'),
+  activeProfile: invoke('sessions:activeProfile'),
   newSession: invoke('ui:newSession'),
   newSessionDone: invoke('ui:newSessionDone'),
   focus: invoke('sessions:focus'),
