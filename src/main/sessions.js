@@ -14,7 +14,7 @@ const { isAlive, expandHome, statusFromTitle, cleanTitle, gridLayout, cascadeLay
 const { EVENTS_FILE } = require('./config');
 
 const PENDING_TIMEOUT_MS = 20000;
-const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'exe', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'sessionTitle', 'hadPrompt', 'placement'];
+const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'exe', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'lastClaudeSessionId', 'sessionTitle', 'hadPrompt', 'placement'];
 const MAX_NAMES = 300; // remembered Claude sessions (label/group/title keyed by Claude session id)
 const MAX_CLOSED = 25; // entries on the "reopen closed" stack
 // Windows closing within this long of each other are one entry: at a PC restart they all go at once.
@@ -93,6 +93,7 @@ class SessionManager extends EventEmitter {
       launched: false, pid: null, hwnd: null, exe: null, title: '', status: 'unknown', statusSince: now,
       attention: false, note: null, lastFocusedAt: 0, minimized: false, pending: false, pendingSince: 0,
       claudeSessionId: null, groupLocked: false, sessionTitle: null, hadPrompt: false,
+      lastClaudeSessionId: null, // the latest conversation with content seen in this window (survives Claude exiting)
       hadWindow: false, placement: null, restorePlacement: null, ...over,
     };
   }
@@ -278,6 +279,7 @@ class SessionManager extends EventEmitter {
     const s = this._spawn(p, dir, label, command, {
       // Pre-seed identity from the remembered session so grouping/naming apply immediately.
       claudeSessionId: target ? target.sessionId : null, sessionTitle: target ? target.sessionTitle || null : null,
+      lastClaudeSessionId: target ? target.sessionId : null,
     });
     if (target) this._applyRemembered(s, target.sessionId);
     this._changed(true);
@@ -304,8 +306,9 @@ class SessionManager extends EventEmitter {
     return {
       name: s.label || s.sessionTitle || cleanTitle(s.title, this.config.statusGlyphs) || s.profile || 'shell',
       profile: s.profile, cwd: s.cwd, label: s.label || '', group: s.group, groupLocked: !!s.groupLocked,
-      // A conversation with content resumes; Claude running without one starts fresh; else a shell.
-      resumeId: s.claudeSessionId && (s.hadPrompt || s.sessionTitle) ? s.claudeSessionId : null,
+      // The window's latest conversation with content resumes (even if Claude had exited); Claude
+      // running without one starts fresh; anything else is a shell.
+      resumeId: (s.claudeSessionId && (s.hadPrompt || s.sessionTitle) ? s.claudeSessionId : s.lastClaudeSessionId) || null,
       claude: !!s.claudeSessionId || s.status !== 'unknown',
       sessionTitle: s.sessionTitle || null,
       placement: s.placement || null,
@@ -360,20 +363,22 @@ class SessionManager extends EventEmitter {
     // Windows adopted without a known account were plain shells: a profile without a command fits.
     const p = profiles.find((x) => x.name === rec.profile) || (!rec.profile && profiles.find((x) => !x.command));
     if (!p) throw new Error(rec.profile ? `profile "${rec.profile}" no longer exists` : 'no shell profile (one without a command) to reopen it with');
-    // Already back (resumed by hand meanwhile): a second window would attach the conversation twice.
-    if (rec.resumeId && [...this.sessions.values()].some((s) => s.claudeSessionId === rec.resumeId)) return null;
+    // Open in another window meanwhile (resumed by hand): attaching it twice would be wrong, so the
+    // window comes back as a plain shell instead.
+    const elsewhere = !!rec.resumeId && [...this.sessions.values()].some((s) => s.claudeSessionId === rec.resumeId);
+    const resumeId = elsewhere ? null : rec.resumeId;
     let command = p.command || '';
-    if (rec.resumeId) command = withResume(command, rec.resumeId);
-    else if (/^claude(\s|$)/.test(command) && !rec.claude) command = ''; // Claude had exited there: same account, plain shell
+    if (resumeId) command = withResume(command, resumeId);
+    else if (/^claude(\s|$)/.test(command) && (elsewhere || !rec.claude)) command = ''; // same account, plain shell
     else if (this.config.nameClaudeSession !== false) command = withSessionName(command, rec.label);
     const want = rec.cwd ? expandHome(rec.cwd) : null;
     const dir = want && fs.existsSync(want) ? want : expandHome(p.cwd || '~');
     const s = this._spawn(p, dir, rec.label, command, {
       group: rec.group || p.group || this.config.defaultGroup, groupLocked: !!rec.groupLocked,
-      claudeSessionId: rec.resumeId, sessionTitle: rec.resumeId ? rec.sessionTitle : null, hadPrompt: !!rec.resumeId,
+      claudeSessionId: resumeId, lastClaudeSessionId: resumeId, sessionTitle: resumeId ? rec.sessionTitle : null, hadPrompt: !!resumeId,
       restorePlacement: rec.placement,
     });
-    if (rec.resumeId) this._applyRemembered(s, rec.resumeId);
+    if (resumeId) this._applyRemembered(s, resumeId);
     return s;
   }
 
@@ -622,7 +627,11 @@ class SessionManager extends EventEmitter {
       // only writes a transcript once something is said, so its id is not resumable until then.
       s.hadPrompt = ['resume', 'fork', 'compact'].includes(ev.source);
       // The conversation now lives here — no other window may still answer to its id.
-      for (const o of this.sessions.values()) if (o !== s && o.claudeSessionId === ev.sessionId) o.claudeSessionId = null;
+      for (const o of this.sessions.values()) {
+        if (o === s) continue;
+        if (o.claudeSessionId === ev.sessionId) o.claudeSessionId = null;
+        if (o.lastClaudeSessionId === ev.sessionId) o.lastClaudeSessionId = null;
+      }
     }
     if (ev.sessionId) s.claudeSessionId = ev.sessionId;
     if (ev.cwd) s.cwd = ev.cwd;
@@ -649,6 +658,9 @@ class SessionManager extends EventEmitter {
         break;
       default: break;
     }
+    // Remember the window's latest conversation with content: a reopen resumes it even after Claude
+    // exited here, or after a /clear started a new conversation nobody has typed into yet.
+    if (s.claudeSessionId && (s.hadPrompt || s.sessionTitle)) s.lastClaudeSessionId = s.claudeSessionId;
     this._changed(true);
     return true;
   }

@@ -441,11 +441,11 @@ test('a closed window reopens in its folder, resumes its conversation and goes b
   assert.throws(() => mgr.reopenClosed(), /Nothing to reopen/);
 });
 
-test('windows closing together are one entry; exited Claude reopens as a shell, adopted shells via the shell profile', () => {
+test('windows closing together are one entry; Claude without a conversation reopens as a shell, adopted shells via the shell profile', () => {
   const { mgr, state, config } = harness({ windows: [{ id: 10, pid: 100, title: 'MINGW64:/c/work' }] });
   config.profiles.push({ name: 'Shell', group: 'Other', cwd: '.', command: '' });
   mgr.launch({ profileName: 'Claude company', label: 'after claude' });
-  state.windows.push({ id: 20, pid: 5000, title: 'MINGW64:/p' }); // Claude has exited, the shell lives on
+  state.windows.push({ id: 20, pid: 5000, title: 'MINGW64:/p' }); // Claude exited before anything was said
   mgr.poll();
   closeWindows(mgr, state, [10]);
   mgr.closed[mgr.closed.length - 1].at -= 60000; // a minute later...
@@ -464,6 +464,43 @@ test('windows closing together are one entry; exited Claude reopens as a shell, 
   assert.equal(company.env.SATCHEL_PROFILE, 'Claude company');
   assert.equal(shell.command, '');
   assert.equal(shell.env.SATCHEL_PROFILE, 'Shell');
+});
+
+test('a Claude window reopens its last conversation even after Claude exited or /clear started an empty one', () => {
+  const { mgr, state } = harness();
+  const a = mgr.launch({ profileName: 'Claude personal', label: 'x' });
+  state.windows.push({ id: 77, pid: 5000, title: '✳ Claude' });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', satchelId: a.id, sessionId: 'conv1', source: 'startup' });
+  mgr.applyHookEvent({ event: 'UserPromptSubmit', sessionId: 'conv1' });
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'conv1', reason: 'prompt_input_exit' }); // `/exit`
+  state.windows[0].title = 'MINGW64:/p'; // back at the shell prompt
+  mgr.poll();
+  closeWindows(mgr, state, [77]);
+  const b = mgr.reopenClosed().opened[0];
+  assert.equal(state.launched[1].command, "claude --resume 'conv1'");
+
+  // /clear: a new, still empty conversation replaces it — the reopen still brings conv1 back
+  state.windows.push({ id: 78, pid: 5001, title: '✳ Claude' });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', satchelId: b.id, sessionId: 'conv1', source: 'resume' });
+  mgr.applyHookEvent({ event: 'SessionEnd', sessionId: 'conv1', reason: 'clear' });
+  mgr.applyHookEvent({ event: 'SessionStart', satchelId: b.id, sessionId: 'conv2', source: 'clear' });
+  closeWindows(mgr, state, [78]);
+  mgr.reopenClosed();
+  assert.equal(state.launched[2].command, "claude --resume 'conv1'");
+
+  // Open in another window by the time of the reopen: no second attach, a plain shell instead
+  state.windows.push({ id: 79, pid: 5002, title: '✳ Claude' });
+  mgr.poll();
+  closeWindows(mgr, state, [79]);
+  const other = mgr.launch({ profileName: 'Claude personal', label: 'y' });
+  state.windows.push({ id: 80, pid: 5003, title: '✳ Claude' });
+  mgr.poll();
+  mgr.applyHookEvent({ event: 'SessionStart', satchelId: other.id, sessionId: 'conv1', source: 'resume' });
+  mgr.reopenClosed();
+  assert.equal(state.launched[4].command, '');
+  assert.equal(state.launched[4].env.CLAUDE_CONFIG_DIR, 'C:/Users/me/.claude');
 });
 
 test('after a restart the previous session is one reopen entry, joined with what closed during shutdown', () => {

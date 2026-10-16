@@ -75,9 +75,11 @@ tab*. Every tracked window that closes goes onto a stack (`~/.satchel/closed.jso
 brings the most recent back, and tray → *Recently closed* lists older ones. Windows that close
 together — as all of them do when the PC restarts — are one entry, so after a restart a single
 `Ctrl+Alt+T` reopens the whole last session. Each window comes back in its folder, under its
-account, with its label and group, at its old position and size (maximized/minimized too): a Claude
-conversation resumes by session id (`claude --resume <id>`), a window where Claude had already exited
-reopens as a shell under the same account, and adopted plain shells reopen with the shell profile.
+account, with its label and group, at its old position and size (maximized/minimized too). A Claude
+window resumes its last conversation by session id (`claude --resume <id>`) — also when you had
+already exited Claude in it, or a `/clear` had started a new conversation you never typed into. If
+that conversation is open in another window by then, it comes back as a plain shell under the same
+account instead; adopted plain shells reopen with the shell profile.
 Nothing reopens by itself. Tray → *Start with Windows* starts Satchel at login.
 
 **Dock:** the ⤒ button (or tray → *Dock*) turns the panel into a taskbar-like strip on the top or
