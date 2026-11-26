@@ -37,9 +37,12 @@ function finish() {
     source: input.source || input.start_mode || null,
     reason: input.reason || input.end_reason || null,
     // Lets Satchel find the terminal window of sessions it did not launch: it walks the
-    // process tree upwards from our parent (shell <- claude <- bash <- mintty).
+    // process tree upwards from our parent (shell <- claude <- bash <- mintty). That shell exits
+    // right after us, often before Satchel reads the process table, so Claude's own pid (Claude
+    // passes CLAUDE_PID to hooks; it lives as long as the session) is the reliable start.
     pid: process.pid,
     ppid: process.ppid,
+    claudePid: Number(process.env.CLAUDE_PID) || null,
     // Which account this session runs under -> Satchel sorts the window into the matching group.
     // Unset means Claude's default dir, so `claude` typed in a plain terminal is recognised too.
     configDir: process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), '.claude'),

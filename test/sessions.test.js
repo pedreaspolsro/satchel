@@ -6,16 +6,19 @@ const assert = require('node:assert/strict');
 const { SessionManager, withSessionName } = require('../src/main/sessions');
 
 /** In-memory backend/terminal/store/screen so the core can be tested on any OS. */
-function harness({ windows = [], parents = new Map(), foreground = null, ownWindows = [], persisted = {} } = {}) {
-  const state = { windows, parents, foreground, launched: [], bounds: [], focused: [], placements: new Map(), placed: [], maximized: [], minimized: [] };
+const MINTTY = 'C:/Git/usr/bin/mintty.exe';
+
+function harness({ windows = [], parents = new Map(), images = new Map(), foreground = null, ownWindows = [], persisted = {} } = {}) {
+  const state = { windows, parents, images, foreground, launched: [], bounds: [], focused: [], placements: new Map(), placed: [], maximized: [], minimized: [], calls: { listWindows: 0, parents: 0 } };
   const backend = {
     name: 'fake',
     capabilities: { list: true, focus: true, move: true },
-    listWindows: () => state.windows.map((w) => ({ ...w })),
+    listWindows: () => { state.calls.listWindows++; return state.windows.map((w) => ({ ...w })); },
     windowTitle: (id) => { const w = state.windows.find((x) => x.id === id); return w ? w.title : null; },
     shellCwds: (pids) => { const m = new Map(); for (const p of pids) if (state.cwds && state.cwds.has(p)) m.set(p, state.cwds.get(p)); return m; },
-    processImage: (pid) => (state.windows.some((w) => w.pid === pid) ? 'C:/Git/usr/bin/mintty.exe' : null),
-    processParents: () => state.parents,
+    // `images`: processes without a (visible) window yet, e.g. a terminal that is still starting
+    processImage: (pid) => (state.images.has(pid) ? state.images.get(pid) : state.windows.some((w) => w.pid === pid) ? MINTTY : null),
+    processParents: () => { state.calls.parents++; return state.parents; },
     foreground: () => state.foreground,
     focus: (id) => state.focused.push(id),
     setBounds: (id, r) => state.bounds.push({ id, ...r }),
@@ -111,6 +114,146 @@ test('hook events match adopted windows through the process tree and auto-group 
   assert.equal(mgr.snapshot()[0].group, 'Personal');
   assert.equal(mgr.snapshot()[0].profile, 'Claude company'); // ...but the account it runs under is still tracked
   assert.equal(mgr.applyHookEvent({ event: 'Stop', ppid: 777 }), false);
+});
+
+test('a hook event that arrives before its window is adopted forces an adoption sweep and matches', () => {
+  // Another app opens mintty running `claude --resume` (no SATCHEL_ID); Claude's SessionStart comes
+  // seconds before the regular adoption sweep would see the window.
+  // hook(555) <- sh(444) <- claude(333) <- bash(222) <- mintty(100) <- app(60) <- bash(55) <- mintty(200):
+  // the app that opened the new terminal was itself started from a terminal Satchel tracks.
+  const { mgr, state } = harness({
+    windows: [{ id: 20, pid: 200, title: '✳ other' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100], [100, 60], [60, 55], [55, 200]]),
+    foreground: 999,
+  });
+  mgr.poll(); // tick 1: full sweep
+  state.windows.push({ id: 10, pid: 100, title: 'MINGW64:/c/jira' });
+  mgr.poll(); // tick 2: cheap — the new window is not adopted yet
+  assert.equal(mgr.snapshot().length, 1);
+  const late = [];
+  mgr.on('hookLate', (ev) => late.push(ev.event));
+  const sweeps = state.calls.listWindows;
+  const matched = mgr.applyHookEvent({ event: 'SessionStart', source: 'resume', ppid: 444, sessionId: 'abc', sessionTitle: '3364', cwd: 'P:/jira', configDir: 'C:/Users/me/.claude-co' });
+  assert.equal(matched, true);
+  assert.equal(state.calls.listWindows, sweeps + 1, 'one forced adoption sweep');
+  const row = mgr.snapshot().find((s) => s.pid === 100);
+  assert.equal(row.claudeSessionId, 'abc');
+  assert.equal(row.sessionTitle, '3364');
+  assert.equal(row.cwd, 'P:/jira');
+  assert.equal(row.group, 'Company');
+  assert.equal(row.profile, 'Claude company');
+  assert.equal(mgr.snapshot().find((s) => s.pid === 200).claudeSessionId, null, 'the outer terminal is not Claude\'s window');
+  assert.deepEqual(late, [], 'matched straight away, not from the waiting list');
+  assert.equal(state.calls.parents, 1, 'the process table is read once for the event');
+});
+
+test('a hook whose shell has already exited still finds its window through Claude\'s pid', () => {
+  // The shell that ran the hook (444) is gone when the event is read; claude(333) <- bash(222) <- mintty(100) live on.
+  const { mgr } = harness({
+    windows: [{ id: 10, pid: 100, title: 'MINGW64:/c/jira' }],
+    parents: new Map([[333, 222], [222, 100], [100, 1]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  assert.equal(mgr.applyHookEvent({ event: 'SessionStart', source: 'resume', ppid: 444, sessionId: 'old' }), false); // older hook: no claudePid
+  assert.equal(mgr.applyHookEvent({ event: 'SessionStart', source: 'resume', ppid: 444, claudePid: 333, sessionId: 'abc', configDir: 'C:/Users/me/.claude' }), true);
+  assert.equal(mgr.snapshot()[0].claudeSessionId, 'abc');
+  assert.equal(mgr.snapshot()[0].group, 'Personal');
+});
+
+test('a hook event whose window shows up later waits and matches on the next full sweep', () => {
+  const { mgr, state } = harness({
+    windows: [{ id: 20, pid: 200, title: '✳ other' }],
+    parents: new Map([[555, 444], [444, 333], [333, 222], [222, 100], [100, 1]]),
+    images: new Map([[100, MINTTY]]), // the terminal process runs, its window is not visible yet
+    foreground: 999,
+  });
+  mgr.poll();
+  const late = [];
+  mgr.on('hookLate', (ev, ms) => late.push([ev.event, typeof ms]));
+  assert.equal(mgr.applyHookEvent({ event: 'SessionStart', source: 'resume', ppid: 444, sessionId: 'abc', sessionTitle: '3364', cwd: 'P:/jira', configDir: 'C:/Users/me/.claude' }), false);
+  assert.equal(mgr.snapshot().length, 1);
+  state.windows.push({ id: 10, pid: 100, title: 'MINGW64:/c/jira' });
+  mgr.poll(); // cheap tick: no retry
+  assert.equal(mgr.snapshot().length, 1);
+  mgr._tick = 0; mgr.poll(); // the next full sweep adopts the window and retries
+  const row = mgr.snapshot().find((s) => s.pid === 100);
+  assert.equal(row.claudeSessionId, 'abc');
+  assert.equal(row.sessionTitle, '3364');
+  assert.equal(row.group, 'Personal');
+  assert.deepEqual(late, [['SessionStart', 'number']]);
+  assert.equal(state.calls.parents, 1, 'retries reuse the chain read when the event came in');
+  mgr.stop();
+});
+
+test('hook events of sessions without a terminal window never touch a row; waiting ones expire silently', () => {
+  const { mgr, state } = harness({
+    windows: [{ id: 10, pid: 100, title: '✳ mine' }],
+    parents: new Map([
+      // Agent SDK inside another app: hook <- sh(800) <- claude(700) <- electron(600) <- explorer(500)
+      [800, 700], [700, 600], [600, 500],
+      // a terminal (300) whose window never becomes adoptable: hook <- sh(901/902) <- claude(900) <- bash(301) <- mintty(300)
+      [901, 900], [902, 900], [900, 301], [301, 300],
+    ]),
+    images: new Map([[600, 'C:/Apps/Workbench/Workbench.exe'], [700, 'C:/Users/me/.local/bin/claude.exe'], [300, MINTTY]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  let flagged = 0;
+  mgr.on('attention', () => flagged++);
+  const before = JSON.stringify(mgr.snapshot());
+  const sweeps = state.calls.listWindows;
+  for (const event of ['SessionStart', 'UserPromptSubmit', 'Notification', 'Stop', 'SessionEnd']) {
+    assert.equal(mgr.applyHookEvent({ event, ppid: 800, sessionId: 'sdk', sessionTitle: 'x', cwd: 'P:/wb', configDir: 'C:/Users/me/.claude-co', message: 'm' }), false);
+  }
+  assert.equal(state.calls.listWindows, sweeps, 'no terminal on the chain -> no forced sweep');
+  assert.equal(mgr._hookQueue.length, 0, '...and nothing to wait for');
+
+  // A terminal on the chain, but no window for it: the event waits; a newer one of the same session replaces it.
+  assert.equal(mgr.applyHookEvent({ event: 'SessionStart', source: 'startup', ppid: 901, sessionId: 'hidden' }), false);
+  assert.equal(mgr.applyHookEvent({ event: 'UserPromptSubmit', ppid: 902, sessionId: 'hidden', sessionTitle: 'x' }), false);
+  assert.deepEqual(mgr._hookQueue.map((x) => x.ev.event), ['UserPromptSubmit']);
+  const reads = state.calls.parents;
+  mgr._tick = 0; mgr.poll(); // later full sweeps retry without reading the process table again
+  assert.equal(state.calls.parents, reads);
+  assert.equal(mgr._hookQueue.length, 1);
+  mgr._hookQueue[0].at -= 31000;
+  mgr._tick = 0; mgr.poll();
+  assert.equal(mgr._hookQueue.length, 0, 'expired');
+  assert.equal(JSON.stringify(mgr.snapshot()), before, 'no row changed');
+  assert.equal(flagged, 0);
+  mgr.stop();
+});
+
+test('hook events force at most one adoption sweep per 1.5 s; a trailing sweep picks up what waits', (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  // two terminals opened at once by another app; neither window is visible yet
+  const { mgr, state } = harness({
+    windows: [{ id: 20, pid: 200, title: '✳ other' }],
+    parents: new Map([[444, 333], [333, 222], [222, 100], [446, 335], [335, 224], [224, 101]]),
+    images: new Map([[100, MINTTY], [101, MINTTY]]),
+    foreground: 999,
+  });
+  mgr.poll();
+  const late = [];
+  mgr.on('hookLate', (ev) => late.push(ev.sessionId));
+  const base = state.calls.listWindows;
+  assert.equal(mgr.applyHookEvent({ event: 'SessionStart', ppid: 444, sessionId: 'a', configDir: 'C:/Users/me/.claude' }), false);
+  assert.equal(state.calls.listWindows, base + 1, 'forced sweep');
+  assert.equal(mgr.applyHookEvent({ event: 'SessionStart', ppid: 446, sessionId: 'b', configDir: 'C:/Users/me/.claude-co' }), false);
+  assert.equal(state.calls.listWindows, base + 1, 'throttled');
+  state.windows.push({ id: 10, pid: 100, title: 'a' }, { id: 11, pid: 101, title: 'b' });
+  t.mock.timers.tick(1499);
+  assert.equal(state.calls.listWindows, base + 1);
+  t.mock.timers.tick(1); // the trailing sweep
+  assert.equal(state.calls.listWindows, base + 2);
+  assert.deepEqual(late, ['a', 'b']);
+  const rows = mgr.snapshot();
+  assert.equal(rows.find((s) => s.pid === 100).group, 'Personal');
+  assert.equal(rows.find((s) => s.pid === 101).group, 'Company');
+  assert.equal(mgr._hookQueue.length, 0);
+  t.mock.timers.tick(5000);
+  assert.equal(state.calls.listWindows, base + 2, 'nothing waits -> no more sweeps');
 });
 
 test('launch passes env + SATCHEL_ID and attaches the window by pid', () => {

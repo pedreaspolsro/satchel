@@ -192,8 +192,10 @@ What you get:
   immediately, without waiting for the title to change;
 * **automatic grouping of adopted windows** — the hook runs inside Claude's process, so it reports
   `CLAUDE_CONFIG_DIR`; Satchel walks the process tree (hook → claude → bash → mintty) to find the
-  window and moves it into the profile's group (Personal / Company …). A group you set by hand is
-  never overridden;
+  window and moves it into the profile's group (Personal / Company …). The walk also starts from
+  Claude's own pid (`CLAUDE_PID`, which Claude passes to hooks), because the shell that ran the hook
+  has usually exited by the time Satchel reads the event. A group you set by hand is never
+  overridden;
 * **Claude's session name as the row name** — hooks carry `session_title` (the `/rename` name, the
   `--name` given at launch, or the topic Claude generates from your first prompt). Rows without a
   label show it, and keep showing it after Claude exits to the shell prompt (the window title
@@ -204,6 +206,15 @@ What you get:
 * `SessionEnd` tells Satchel that Claude left the window, so a later `--resume` of that
   conversation elsewhere is not misattributed to it;
 * the session's real `cwd` and Claude session id per row.
+
+Terminals opened by other tools (e.g. `mintty … -c "claude --resume <id>"`) have no `SATCHEL_ID`,
+and Claude's `SessionStart` may arrive before Satchel has adopted the window (its regular adoption
+sweep runs every 5 s, every 25 s in the tray). An event whose process chain leads to a terminal
+Satchel does not track yet therefore triggers an immediate sweep (at most one per 1.5 s, plus one
+trailing sweep for what came in between); if the window is still not there, the event waits up to
+30 s and is retried after every sweep. A newer event of the same Claude session replaces a waiting
+one. Events of Claude sessions without a terminal (e.g. the Agent SDK inside another app) trigger
+nothing and are dropped quietly.
 
 Naming works in the other direction only at launch: a label typed into **+ New** is passed as
 `claude --name "<label>"` (for profiles whose command is plain `claude`), so Claude's own title and

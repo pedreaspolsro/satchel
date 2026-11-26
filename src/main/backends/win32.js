@@ -155,6 +155,7 @@ const OpenProcess = kernel32.func('intptr_t __stdcall OpenProcess(uint32_t acces
 const QueryFullProcessImageNameW = kernel32.func('bool __stdcall QueryFullProcessImageNameW(intptr_t h, uint32_t flags, void *buf, void *size)');
 const CloseHandle = kernel32.func('bool __stdcall CloseHandle(intptr_t h)');
 const GetCurrentProcess = kernel32.func('intptr_t __stdcall GetCurrentProcess()');
+const TerminateProcess = kernel32.func('int __stdcall TerminateProcess(intptr_t h, uint32_t code)');
 const OpenProcessToken = advapi32.func('int __stdcall OpenProcessToken(intptr_t process, uint32_t access, void *token)');
 // Out-param declared as a typed double pointer so koffi hands back a decodable pointer value.
 const CreateEnvironmentBlock = userenv.func('CreateEnvironmentBlock', 'int', [koffi.out(koffi.pointer(koffi.pointer('uint16'))), 'intptr', 'int32']);
@@ -236,6 +237,14 @@ function screenToDip(rect) {
 module.exports = {
   name: 'win32',
   capabilities: { list: true, focus: true, move: true, dock: true },
+
+  /**
+   * End this process now with `code`, skipping DLL teardown. For the CLI only, once its output is
+   * flushed: koffi 2.x crashes on a normal exit when stderr is the NUL device (0xC0000409).
+   */
+  exitNow(code) {
+    try { TerminateProcess(GetCurrentProcess(), code >>> 0); } catch { /* fall back to a normal exit */ }
+  },
 
   /**
    * Reserve a screen edge for window `hwnd` (AppBar). `rect` is the requested strip in physical

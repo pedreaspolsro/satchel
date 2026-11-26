@@ -59,6 +59,8 @@ app.whenReady().then(() => {
     const matched = manager.applyHookEvent(ev);
     console.log(`[satchel] hook ${ev.event} ${matched ? 'matched' : 'unmatched'} (satchelId=${ev.satchelId || '-'} ppid=${ev.ppid || '-'} configDir=${ev.configDir || '-'})`);
   });
+  // An event that came before its window was adopted, matched by a later sweep.
+  manager.on('hookLate', (ev, ms) => console.log(`[satchel] hook ${ev.event} matched after ${ms} ms (window adopted late)`));
   hooks.start();
   createWindow();
   createTray();
@@ -696,12 +698,12 @@ function cliMessage() {
  * live sessions and `--launch`ed windows belong to it. Returns false when no GUI is listening
  * (the caller then runs the command in this standalone instance).
  */
-async function cliViaGui(out) {
+async function cliViaGui(out, fail, exit) {
   const msg = cliMessage();
   if (!msg) return false;
   const first = await controlRequest(config.CONTROL_SOCKET, msg);
   if (!first) return false;
-  if (!first.ok) { process.stderr.write(`${first.error}\n`); app.exit(1); return true; }
+  if (!first.ok) { await fail(`${first.error}\n`); exit(1); return true; }
   let result = first.result;
   if (msg.cmd === 'launch' && result && result.id && !result.hwnd) {
     // Wait until the GUI has attached the window, like the standalone path does.
@@ -715,15 +717,20 @@ async function cliViaGui(out) {
     if (!result.hwnd) result = { ...result, warning: 'window not detected within 15s' };
   }
   await out(result);
-  app.exit(0);
+  exit(0);
   return true;
 }
 
 async function runCli(backend) {
   const out = (o) => new Promise((r) => process.stdout.write(`${JSON.stringify(o, null, 2)}\n`, r));
+  const fail = (text) => new Promise((r) => process.stderr.write(text, r));
+  // A normal exit crashes in koffi's teardown when stderr is the NUL device (`2>/dev/null`,
+  // stdio 'ignore'): status 0xC0000409, which bash shows as 127. The output is flushed by now,
+  // so the backend ends the process directly instead.
+  const exit = (code) => { if (typeof backend.exitNow === 'function') backend.exitNow(code); app.exit(code); };
   const waitFor = async (fn, ms) => { const t0 = Date.now(); for (;;) { const v = fn(); if (v) return v; if (Date.now() - t0 > ms) return null; await new Promise((r) => setTimeout(r, 250)); } };
   try {
-    if (await cliViaGui(out)) return;
+    if (await cliViaGui(out, fail, exit)) return;
     manager.poll();
     if (argv.includes('--list')) {
       await out({ backend: backend.name, capabilities: backend.capabilities, sessions: manager.snapshot() });
@@ -747,9 +754,9 @@ async function runCli(backend) {
       await out({ usage: 'Satchel [--list | --launch <profile> [--cwd dir] [--label text] | --focus <id|pid> | --close <id|pid> | --tile <group|All> [--display id] | --cascade <group|All> | --displays | --quit]' });
     }
     manager.persist();
-    app.exit(0);
+    exit(0);
   } catch (e) {
-    process.stderr.write(`${e.stack || e}\n`);
-    app.exit(1);
+    await fail(`${e.stack || e}\n`);
+    exit(1);
   }
 }

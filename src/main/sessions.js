@@ -21,6 +21,12 @@ const MAX_CLOSED = 25; // entries on the "reopen closed" stack
 const CLOSE_BURST_MS = 4000;
 // At startup, the windows a restart took away join what Satchel saw close during that shutdown.
 const SHUTDOWN_MS = 60000;
+// A hook event can arrive before Satchel has adopted its window (Claude started right away in a
+// terminal another app opened): it forces an adoption sweep (at most one per HOOK_SWEEP_MS), and
+// if the window is still not there it waits for later sweeps, up to HOOK_WAIT_MS.
+const HOOK_SWEEP_MS = 1500;
+const HOOK_WAIT_MS = 30000;
+const HOOK_QUEUE_MAX = 20;
 
 /** Compare directories loosely (slashes, trailing separators, case on Windows). */
 function sameDir(a, b) {
@@ -77,6 +83,9 @@ class SessionManager extends EventEmitter {
     this.slow = false;           // hidden in the tray -> poll 5x slower
     this._tick = 0;
     this.timer = null;
+    this._hookQueue = [];        // [{ ev, ctx, at }] hook events still waiting for their window
+    this._lastHookSweep = 0;     // when a hook event last forced an adoption sweep
+    this._hookSweepTimer = null; // the trailing sweep for events that came inside the throttle window
     this.lastEmitted = '';
     this.lastPersisted = '';
     this.lastNames = '';
@@ -123,13 +132,18 @@ class SessionManager extends EventEmitter {
   }
 
   start() {
-    this.stop();
+    if (this.timer) clearInterval(this.timer);
     const tick = () => { try { this.poll(); } catch (e) { this.emit('error', e); } };
     tick();
     this.timer = setInterval(tick, (this.config.pollIntervalMs || 1000) * (this.slow ? 5 : 1));
   }
 
-  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
+  stop() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+    if (this._hookSweepTimer) clearTimeout(this._hookSweepTimer);
+    this._hookSweepTimer = null;
+  }
 
   /** Nothing is on screen while Satchel sits in the tray: poll 5x slower (hooks stay instant). */
   setSlow(on) {
@@ -169,10 +183,15 @@ class SessionManager extends EventEmitter {
     return true;
   }
 
-  /** Full reconciliation between OS windows and our session list. */
-  _pollFull(now) {
-    this._sweep = (this._sweep || 0) + 1;
-    if (this._sweep % 6 === 2) this.refreshCwds(); // ≈ every 30 s while visible; skips sweep 1 (startup)
+  /**
+   * Full reconciliation between OS windows and our session list. `forced`: an extra sweep for a
+   * hook event — it leaves the regular cadence (live cwd refresh) alone.
+   */
+  _pollFull(now, { forced = false } = {}) {
+    if (!forced) {
+      this._sweep = (this._sweep || 0) + 1;
+      if (this._sweep % 6 === 2) this.refreshCwds(); // ≈ every 30 s while visible; skips sweep 1 (startup)
+    }
     const adopt = new Set((this.config.adoptExecutables || []).map((s) => s.toLowerCase()));
     const windows = [];
     for (const w of this.backend.listWindows()) {
@@ -220,6 +239,7 @@ class SessionManager extends EventEmitter {
         this._adopt(w, now);
       }
     }
+    this._retryHooks(now); // hook events that came before their window may match now
     this._changed();
   }
 
@@ -563,27 +583,96 @@ class SessionManager extends EventEmitter {
    * Find the session a hook event belongs to:
    *   1. SATCHEL_ID env var (sessions we launched)
    *   2. Claude session id seen before
-   *   3. process tree: walk up from the hook's parent until we hit a pid that owns a session window
+   *   3. process tree: walk up from the hook's parent (and from Claude's pid) to the nearest terminal
+   *      process, and take the session that owns a pid on the way
    * SessionStart tries the process tree before the session id: a `claude --resume` may bring a known
    * session id into a *different* window than the one that ran it last.
+   * `ctx` carries the process chain between attempts for the same event (see _hookChain).
    */
-  _sessionForHook(ev) {
+  _sessionForHook(ev, ctx = {}) {
     if (ev.satchelId && this.sessions.has(ev.satchelId)) return this.sessions.get(ev.satchelId);
     const all = [...this.sessions.values()];
     const bySessionId = () => (ev.sessionId ? all.find((x) => x.claudeSessionId === ev.sessionId) : null) || null;
     const byTree = () => {
-      const getParents = this.backend.processParentsDeep || this.backend.processParents;
-      if (!ev.ppid || typeof getParents !== 'function') return null;
+      const chain = this._hookChain(ev, ctx);
+      if (!chain.length) return null;
       const byPid = new Map(all.filter((x) => x.pid).map((x) => [x.pid, x]));
-      const parents = getParents.call(this.backend);
-      let p = ev.ppid;
-      for (let depth = 0; depth < 16 && p; depth++) {
-        if (byPid.has(p)) return byPid.get(p);
-        p = parents.get(p);
-      }
+      for (const p of chain) if (byPid.has(p)) return byPid.get(p);
       return null;
     };
     return ev.event === 'SessionStart' ? (byTree() || bySessionId()) : (bySessionId() || byTree());
+  }
+
+  /**
+   * The hook's ancestors, its parent first, then those of Claude itself (`claudePid`, from
+   * CLAUDE_PID): the shell that ran the hook has often exited by the time the event is read, which
+   * cuts the walk from `ppid` short — Claude's process lives as long as the session. Read once per
+   * event (the deep walk costs a `ps -l` run) and reused by later attempts.
+   */
+  _hookChain(ev, ctx) {
+    if (ctx.chain) return ctx.chain;
+    const chain = [];
+    const getParents = this.backend.processParentsDeep || this.backend.processParents;
+    if ((ev.ppid || ev.claudePid) && typeof getParents === 'function') {
+      const parents = getParents.call(this.backend);
+      for (const start of [ev.ppid, ev.claudePid]) {
+        for (let p = start, n = 0; p && n < 16 && !chain.includes(p); p = parents.get(p), n++) chain.push(p);
+      }
+    }
+    // The nearest terminal process on the way up is the window Claude runs in; the walk ends
+    // there. Above it are only whatever started that terminal — possibly another terminal
+    // Satchel tracks (a terminal opened from a terminal), which must not get this window's events.
+    const adopt = new Set((this.config.adoptExecutables || []).map((s) => s.toLowerCase()));
+    const cut = chain.findIndex((pid) => { const img = this.backend.processImage(pid); return !!img && adopt.has(path.basename(img).toLowerCase()); });
+    ctx.terminal = cut >= 0 ? chain[cut] : null;
+    ctx.chain = cut >= 0 ? chain.slice(0, cut + 1) : chain;
+    return ctx.chain;
+  }
+
+  /**
+   * The terminal an adoption sweep could still turn into a match for this event: the nearest one
+   * on its chain, unless adoption is off or the user told Satchel to forget that window. Null for
+   * Claude sessions without a terminal (the Agent SDK inside another app).
+   */
+  _pendingTerminal(ev, ctx) {
+    this._hookChain(ev, ctx);
+    const t = ctx.terminal;
+    if (!t || this.config.adoptForeign === false) return null;
+    return [...this.ignored].some((k) => Number(k.split(':')[0]) === t) ? null : t;
+  }
+
+  /**
+   * An adoption sweep on behalf of a hook event, right now — at most once per HOOK_SWEEP_MS. Inside
+   * that window one trailing sweep is scheduled for whatever is still waiting by then (polling may
+   * be slow: every 5 s, 25 s in the tray). Returns true if it ran now.
+   */
+  _hookSweep(now) {
+    const run = (t) => { this._lastHookSweep = t; this._pollFull(t, { forced: true }); };
+    const wait = this._lastHookSweep + HOOK_SWEEP_MS - now;
+    if (wait <= 0) { run(now); return true; }
+    if (!this._hookSweepTimer) {
+      this._hookSweepTimer = setTimeout(() => {
+        this._hookSweepTimer = null;
+        if (!this._hookQueue.length) return; // a regular sweep got there first
+        try { run(Date.now()); } catch (e) { this.emit('error', e); }
+      }, wait);
+      if (typeof this._hookSweepTimer.unref === 'function') this._hookSweepTimer.unref();
+    }
+    return false;
+  }
+
+  /** Retry the waiting hook events (after every full sweep); expired ones go away silently. */
+  _retryHooks(now) {
+    if (!this._hookQueue.length) return;
+    const queue = this._hookQueue;
+    this._hookQueue = [];
+    for (const item of queue) {
+      if (now - item.at > HOOK_WAIT_MS) continue;
+      const s = this._sessionForHook(item.ev, item.ctx);
+      if (!s) { this._hookQueue.push(item); continue; }
+      this._applyHook(s, item.ev);
+      this.emit('hookLate', item.ev, now - item.at);
+    }
   }
 
   /**
@@ -614,11 +703,37 @@ class SessionManager extends EventEmitter {
     if (!s.sessionTitle && rec.sessionTitle) s.sessionTitle = rec.sessionTitle;
   }
 
-  /** Event shape: see hooks/claude-code-hook.js. Returns true if a session matched. */
+  /**
+   * Event shape: see hooks/claude-code-hook.js. Returns true if a session matched (now). An event
+   * whose process chain leads to a terminal Satchel has not adopted yet forces an adoption sweep;
+   * if that does not find the window either, it waits (HOOK_WAIT_MS) and is retried after later
+   * sweeps. A newer event of the same Claude session replaces a waiting one.
+   */
   applyHookEvent(ev) {
     if (!ev || typeof ev !== 'object') return false;
-    const s = this._sessionForHook(ev);
-    if (!s) return false;
+    if (ev.sessionId) this._hookQueue = this._hookQueue.filter((x) => x.ev.sessionId !== ev.sessionId);
+    const ctx = {};
+    let s = this._sessionForHook(ev, ctx);
+    if (!s) {
+      const terminal = this._pendingTerminal(ev, ctx);
+      if (!terminal) return false; // no terminal to wait for (e.g. an Agent SDK session)
+      // From here on only that terminal can match by tree: the hook's shell is gone, and a new
+      // terminal that reuses its pid must not pick up this event.
+      ctx.chain = [terminal];
+      const now = Date.now();
+      if (this._hookSweep(now)) s = this._sessionForHook(ev, ctx);
+      if (!s) {
+        this._hookQueue = this._hookQueue.filter((x) => now - x.at <= HOOK_WAIT_MS);
+        this._hookQueue.push({ ev, ctx, at: now });
+        if (this._hookQueue.length > HOOK_QUEUE_MAX) this._hookQueue.splice(0, this._hookQueue.length - HOOK_QUEUE_MAX);
+        return false;
+      }
+    }
+    this._applyHook(s, ev);
+    return true;
+  }
+
+  _applyHook(s, ev) {
     if (ev.event === 'SessionStart' && ev.sessionId && ev.sessionId !== s.claudeSessionId) {
       // Another Claude session took over this window (`/clear`, a fresh `claude`, `--resume` of a
       // different conversation): drop the previous conversation's automatic name.
@@ -662,7 +777,6 @@ class SessionManager extends EventEmitter {
     // exited here, or after a /clear started a new conversation nobody has typed into yet.
     if (s.claudeSessionId && (s.hadPrompt || s.sessionTitle)) s.lastClaudeSessionId = s.claudeSessionId;
     this._changed(true);
-    return true;
   }
 
   /** The session whose window is in the foreground, else the one focused most recently. */
