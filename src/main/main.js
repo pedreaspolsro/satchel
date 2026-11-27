@@ -578,6 +578,7 @@ function registerIpc() {
   h('sessions:minimize', (id) => manager.minimize(id));
   h('sessions:restore', (id) => manager.restore(id));
   h('sessions:forget', (id) => manager.forget(id));
+  h('sessions:move', (id, targetId, after) => manager.move(id, targetId, !!after));
   h('sessions:tile', (group, displayId) => manager.tile(group, displayId));
   h('sessions:cascade', (group, displayId) => manager.cascade(group, displayId));
   h('sessions:minimizeGroup', (group) => manager.minimizeGroup(group));

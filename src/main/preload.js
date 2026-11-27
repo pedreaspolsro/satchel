@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('satchel', {
   minimize: invoke('sessions:minimize'),
   restore: invoke('sessions:restore'),
   forget: invoke('sessions:forget'),
+  move: invoke('sessions:move'),
   tile: invoke('sessions:tile'),
   cascade: invoke('sessions:cascade'),
   minimizeGroup: invoke('sessions:minimizeGroup'),

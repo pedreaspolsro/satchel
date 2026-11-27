@@ -274,6 +274,30 @@ test('launch passes env + SATCHEL_ID and attaches the window by pid', () => {
   assert.throws(() => mgr.launch({ profileName: 'nope' }), /Unknown profile/);
 });
 
+test('rows can be moved; the order sticks, drives tile, and new windows go to the end', () => {
+  const { mgr, state, saved } = harness({ windows: [{ id: 1, pid: 11, title: 'a' }, { id: 2, pid: 12, title: 'b' }, { id: 3, pid: 13, title: 'c' }] });
+  mgr.poll();
+  const order = () => mgr.snapshot().map((s) => s.title).join('');
+  const id = (title) => mgr.snapshot().find((s) => s.title === title).id;
+  assert.equal(order(), 'abc');
+  mgr.move(id('c'), id('a'));          // before a
+  assert.equal(order(), 'cab');
+  mgr.move(id('c'), id('b'), true);    // behind b
+  assert.equal(order(), 'abc');
+  mgr.move(id('a'), null);             // no target: to the end
+  assert.equal(order(), 'bca');
+  mgr.move(id('b'), id('b'));          // onto itself: to the end
+  assert.equal(order(), 'cab');
+  assert.throws(() => mgr.move('nope', id('a')));
+  assert.deepEqual(saved.sessions.map((s) => s.pid), [13, 11, 12], 'persisted in that order');
+  assert.deepEqual(saved.sessions.map((s) => s.order), [0, 1, 2]);
+  mgr.tile('All', 1);
+  assert.deepEqual(state.bounds.map((b) => b.id), [3, 1, 2], 'tile follows the order');
+  state.windows.push({ id: 4, pid: 14, title: 'd' });
+  mgr._tick = 0; mgr.poll();
+  assert.equal(order(), 'cabd');
+});
+
 test('tile lays out the windows of a group on the work area', () => {
   const { mgr, state } = harness({ windows: [
     { id: 1, pid: 100, title: 'a' }, { id: 2, pid: 101, title: 'b' }, { id: 3, pid: 102, title: 'c' },

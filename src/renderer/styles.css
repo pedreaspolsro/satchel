@@ -102,6 +102,14 @@ body.newwin { padding: 12px; background: var(--bg); }
 .row.focused .label::before { content: '▸'; color: var(--c); margin-right: 4px; font-weight: 400; }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
 
+/* a row or chip being dragged to a new place, and the line where it would land */
+body.reordering, body.reordering * { cursor: grabbing !important; }
+.row.dragging, .chip.dragging { opacity: .4; }
+.row.drop-before { box-shadow: 0 -3px 0 0 var(--accent); }
+.row.drop-after { box-shadow: 0 3px 0 0 var(--accent); }
+.chip.drop-before { box-shadow: -3px 0 0 0 var(--accent); }
+.chip.drop-after { box-shadow: 3px 0 0 0 var(--accent); }
+
 kbd { font: 10px ui-monospace, Consolas, monospace; color: var(--muted); border: 1px solid var(--border); border-radius: 3px; padding: 0 3px; }
 .actions { display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 4px; opacity: 0; }
 .row:hover .actions, .row:focus-within .actions { opacity: 1; }

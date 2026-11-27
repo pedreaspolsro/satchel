@@ -107,6 +107,10 @@ Keyboard: `Ctrl+N` new session · `Ctrl+Shift+T` reopen closed window(s) · `Ctr
 n-th row of the current tab · `F2` rename the focused row · `Esc` close the form · global
 `Ctrl+Alt+S` shows/hides Satchel · global `Ctrl+Alt+T` reopens closed window(s).
 
+**Your own order:** drag a row in the panel, or a chip in the docked strip, to where you want it
+(`Esc` cancels). The order is remembered across restarts and is the one `Ctrl+1..9`, *Tile* and
+*Cascade* follow; new windows are added at the end.
+
 Row click = focus that terminal. Right-click / `⋯` = rename, move to group, **open folder**,
 **copy path**, minimize, close, forget. Each row knows its working directory — Claude sessions
 report theirs through the hooks, and for plain shells (adopted windows included) Satchel reads the

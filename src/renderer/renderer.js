@@ -6,7 +6,7 @@
   const $ = (sel) => document.querySelector(sel);
   const state = {
     sessions: [], config: { groups: [], profiles: [], defaultGroup: 'Other', dock: { edge: 'top' } }, info: {}, displays: [],
-    tab: 'All', editingId: null, pinned: false, displayId: null, error: null, docked: null,
+    tab: 'All', editingId: null, dragging: false, pinned: false, displayId: null, error: null, docked: null,
   };
 
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -123,6 +123,7 @@
   function render() {
     if (document.hidden) return; // hidden in the tray: nothing to paint (re-rendered on show)
     if (state.editingId) return; // don't blow away the rename input
+    if (state.dragging) return; // nor the row being dragged (painted when the drag ends)
     if (state.docked) { renderDock(); return; }
     $('#tabs').innerHTML = tabsHtml();
     renderList();
@@ -247,6 +248,74 @@
     if (el) { e.preventDefault(); api.contextMenu(el.dataset.id); }
   }
 
+  // ---- drag & drop reordering -------------------------------------------------------------
+
+  /**
+   * Drag a row (panel) or a chip (dock) to a new place. Pointer events, not HTML5 drag & drop: the
+   * docked strip never activates, and the list repaints on every session update.
+   */
+  function bindReorder(container, horizontal) {
+    let d = null; // { id, pointerId, x, y, active, target, after }
+    const items = () => [...container.querySelectorAll('.row, .chip')];
+    const unmark = () => { for (const el of container.querySelectorAll('.drop-before, .drop-after')) el.classList.remove('drop-before', 'drop-after'); };
+    const end = (commit) => {
+      const drag = d;
+      d = null;
+      if (!drag || !drag.active) return;
+      state.dragging = false;
+      document.body.classList.remove('reordering');
+      try { container.releasePointerCapture(drag.pointerId); } catch { /* already released */ }
+      if (commit && drag.target) {
+        // Paint the new order now; the main process confirms it with a session update.
+        const moved = state.sessions.find((s) => s.id === drag.id);
+        const rest = state.sessions.filter((s) => s.id !== drag.id);
+        const at = rest.findIndex((s) => s.id === drag.target);
+        if (moved && at >= 0) { rest.splice(at + (drag.after ? 1 : 0), 0, moved); state.sessions = rest; }
+        api.move(drag.id, drag.target, drag.after).catch(showErr);
+      }
+      render();
+    };
+    container.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || state.editingId || d) return;
+      const el = e.target.closest('.row, .chip');
+      if (!el || e.target.closest('button, input, [data-act]')) return;
+      d = { id: el.dataset.id, pointerId: e.pointerId, x: e.clientX, y: e.clientY, active: false, target: null, after: false };
+    });
+    container.addEventListener('pointermove', (e) => {
+      if (!d || e.pointerId !== d.pointerId) return;
+      if (!d.active) {
+        if (!(e.buttons & 1)) { d = null; return; } // released outside the window
+        if (Math.hypot(e.clientX - d.x, e.clientY - d.y) < 6) return; // still a click
+        d.active = true;
+        state.dragging = true;
+        document.body.classList.add('reordering');
+        container.setPointerCapture(e.pointerId); // the click that follows goes to the container, not to a row
+        const own = items().find((el) => el.dataset.id === d.id);
+        if (own) own.classList.add('dragging');
+      }
+      const pos = horizontal ? e.clientX : e.clientY;
+      const box = container.getBoundingClientRect();
+      const [lo, hi] = horizontal ? [box.left, box.right] : [box.top, box.bottom];
+      const step = pos < lo + 24 ? -14 : pos > hi - 24 ? 14 : 0; // near an edge: scroll what is hidden into view
+      if (step) container[horizontal ? 'scrollLeft' : 'scrollTop'] += step;
+      const els = items();
+      const mid = (el) => { const r = el.getBoundingClientRect(); return horizontal ? r.left + r.width / 2 : r.top + r.height / 2; };
+      let k = els.findIndex((el) => pos < mid(el)); // the row the dragged one would land in front of
+      if (k < 0) k = els.length;
+      const from = els.findIndex((el) => el.dataset.id === d.id);
+      unmark();
+      d.target = null;
+      if (from < 0 || k === from || k === from + 1) return; // its own place
+      const el = k < els.length ? els[k] : els[els.length - 1];
+      d.target = el.dataset.id;
+      d.after = k === els.length;
+      el.classList.add(d.after ? 'drop-after' : 'drop-before');
+    });
+    container.addEventListener('pointerup', (e) => { if (d && e.pointerId === d.pointerId) end(true); });
+    container.addEventListener('pointercancel', (e) => { if (d && e.pointerId === d.pointerId) end(false); });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && d && d.active) { e.preventDefault(); end(false); } });
+  }
+
   const newSession = () => api.newSession().catch(showErr);
 
   function bind() {
@@ -257,6 +326,8 @@
       $(sel).addEventListener('auxclick', sessionClick);
       $(sel).addEventListener('contextmenu', sessionContext);
     }
+    bindReorder($('#list'), false);
+    bindReorder($('#dock-chips'), true);
     $('#dock-chips').addEventListener('wheel', (e) => { // vertical wheel scrolls the strip horizontally
       if (e.deltaY && !e.deltaX) { e.currentTarget.scrollLeft += e.deltaY; e.preventDefault(); }
     }, { passive: false });

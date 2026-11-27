@@ -14,7 +14,7 @@ const { isAlive, expandHome, statusFromTitle, cleanTitle, gridLayout, cascadeLay
 const { EVENTS_FILE } = require('./config');
 
 const PENDING_TIMEOUT_MS = 20000;
-const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'exe', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'lastClaudeSessionId', 'sessionTitle', 'hadPrompt', 'placement'];
+const PERSIST_FIELDS = ['id', 'pid', 'hwnd', 'exe', 'profile', 'group', 'groupLocked', 'label', 'cwd', 'createdAt', 'launched', 'claudeSessionId', 'lastClaudeSessionId', 'sessionTitle', 'hadPrompt', 'placement', 'order'];
 const MAX_NAMES = 300; // remembered Claude sessions (label/group/title keyed by Claude session id)
 const MAX_CLOSED = 25; // entries on the "reopen closed" stack
 // Windows closing within this long of each other are one entry: at a PC restart they all go at once.
@@ -103,7 +103,9 @@ class SessionManager extends EventEmitter {
       attention: false, note: null, lastFocusedAt: 0, minimized: false, pending: false, pendingSince: 0,
       claudeSessionId: null, groupLocked: false, sessionTitle: null, hadPrompt: false,
       lastClaudeSessionId: null, // the latest conversation with content seen in this window (survives Claude exiting)
-      hadWindow: false, placement: null, restorePlacement: null, ...over,
+      hadWindow: false, placement: null, restorePlacement: null,
+      order: null, // position the user gave it by dragging; null = after those, by age
+      ...over,
     };
   }
 
@@ -527,7 +529,24 @@ class SessionManager extends EventEmitter {
     return names;
   }
 
-  _ordered() { return [...this.sessions.values()].sort((a, b) => a.createdAt - b.createdAt); }
+  /** The user's order (rows dragged into place) first, then the rest, oldest first. */
+  _ordered() {
+    const key = (s) => (s.order == null ? Infinity : s.order);
+    return [...this.sessions.values()].sort((a, b) => (key(a) - key(b)) || (a.createdAt - b.createdAt));
+  }
+
+  /**
+   * Put session `id` right before (or, with `after`, right behind) session `targetId`; without a
+   * target it goes to the end. The order is the one of rows, chips, Ctrl+1..9, Tile and Cascade.
+   */
+  move(id, targetId, after = false) {
+    this._need(id);
+    const ids = this._ordered().map((s) => s.id).filter((x) => x !== id);
+    const at = targetId && targetId !== id ? ids.indexOf(targetId) : -1;
+    ids.splice(at < 0 ? ids.length : at + (after ? 1 : 0), 0, id);
+    ids.forEach((x, i) => { this.sessions.get(x).order = i; });
+    this._changed(true);
+  }
   _inGroup(group) {
     return this._ordered().filter((s) => s.hwnd != null && (!group || group === 'All' || s.group === group));
   }
