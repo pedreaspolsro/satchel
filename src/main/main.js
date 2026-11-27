@@ -586,6 +586,7 @@ function registerIpc() {
   h('sessions:contextMenu', (id) => showContextMenu(id));
   h('sessions:openFolder', (id) => { const s = manager.get(id); if (s && s.cwd) shell.openPath(s.cwd); });
   h('ui:dockInteractive', (on) => setDockInteractive(on));
+  h('ui:dockMenu', (displayId) => showDockMenu(displayId));
   h('config:get', () => publicConfig());
   h('config:open', () => shell.openPath(config.FILE));
   h('config:reload', () => {
@@ -649,6 +650,27 @@ function setDockInteractive(on) {
   if (!win || win.isDestroyed() || !dockState()) return;
   win.setFocusable(!!on);
   if (on) win.focus(); else win.blur();
+}
+
+/**
+ * The menu of the dock button (panel: ⤒, strip: ⤓): pick the edge, or go back to the floating panel.
+ * `displayId`: the display chosen in the panel; the strip stays on the display it is on.
+ */
+function showDockMenu(displayId) {
+  if (!win || win.isDestroyed()) return;
+  const dock = dockState();
+  // setDock() destroys the window this menu belongs to: let the menu close first.
+  const go = (edge) => () => setTimeout(() => {
+    try { if ((dock ? dock.edge : 'none') !== edge) setDock(edge, dock ? undefined : displayId); } catch (e) { console.error('[satchel]', e.message); }
+  }, 50);
+  const template = [
+    { label: 'Dock to the top of the screen', type: 'radio', checked: !!dock && dock.edge === 'top', click: go('top') },
+    { label: 'Dock to the bottom of the screen', type: 'radio', checked: !!dock && dock.edge === 'bottom', click: go('bottom') },
+    // no separator: it would split the radio group, and a group of one is always checked
+    { label: 'Floating panel', type: 'radio', checked: !dock, click: go('none') },
+  ];
+  if (dock) setDockInteractive(true); // a menu on a non-activating window would dismiss itself
+  Menu.buildFromTemplate(template).popup({ window: win, callback: () => { if (dock && dockState()) setDockInteractive(false); } });
 }
 
 function showContextMenu(id) {

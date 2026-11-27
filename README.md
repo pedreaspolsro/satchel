@@ -82,10 +82,10 @@ that conversation is open in another window by then, it comes back as a plain sh
 account instead; adopted plain shells reopen with the shell profile.
 Nothing reopens by itself. Tray → *Start with Windows* starts Satchel at login.
 
-**Dock:** the ⤒ button (or tray → *Dock*) turns the panel into a taskbar-like strip on the top or
-bottom edge of the selected display, laid out left→right as: group pills (filters) │ Tile / Cascade /
+**Dock:** the ⇅ button (or tray → *Dock*) opens a small menu — *top*, *bottom*, *floating panel* — and
+turns the panel into a taskbar-like strip on that edge of the selected display, laid out left→right as: group pills (filters) │ Tile / Cascade /
 Min all │ one chip per session (colour bar, label, status dot, orange when it needs you) │
-`+ New`, ⚙, ⤓ undock. Like the real taskbar, the strip never takes focus: the first click on a chip
+`+ New`, ⚙, ⇅ (same menu: move the strip to the other edge, or undock). Like the real taskbar, the strip never takes focus: the first click on a chip
 raises that terminal directly (no click-to-focus-Satchel first); inline rename and the context menu
 grab focus just for their moment. On Windows the strip registers as an *AppBar*, so the work area shrinks and
 maximized windows (and Satchel's own tiling) stay clear of it; elsewhere it is a plain

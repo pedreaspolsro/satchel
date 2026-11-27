@@ -345,7 +345,7 @@
       state.pinned = await api.setAlwaysOnTop(!state.pinned);
       $('#btn-pin').classList.toggle('on', state.pinned);
     });
-    $('#btn-dock').addEventListener('click', () => api.setDock((state.config.dock && state.config.dock.edge) || 'top', state.displayId).catch(showErr));
+    $('#btn-dock').addEventListener('click', () => api.dockMenu(state.displayId).catch(showErr));
     $('#btn-config').addEventListener('click', () => api.openConfig());
     $('#btn-hooks').addEventListener('click', hooksClick);
     $('#btn-reload').addEventListener('click', async () => {
@@ -360,7 +360,7 @@
     $('#dock-minall').addEventListener('click', () => api.minimizeGroup(state.tab).catch(showErr));
     $('#dock-config').addEventListener('click', () => api.openConfig());
     $('#dock-hide').addEventListener('click', () => api.hideToTray().catch(showErr));
-    $('#dock-undock').addEventListener('click', () => api.setDock('none').catch(showErr));
+    $('#dock-undock').addEventListener('click', () => api.dockMenu().catch(showErr));
 
     document.addEventListener('keydown', (e) => {
       if (state.editingId) return;
